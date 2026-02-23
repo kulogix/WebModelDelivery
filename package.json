@@ -1,0 +1,25 @@
+{
+  "name": "webmodeldelivery",
+  "version": "1.0.0",
+  "description": "Package machine learning models for browser-based inference via CDN-friendly shards, with a Service Worker that transparently reassembles them at runtime.",
+  "main": "model-sw.js",
+  "scripts": {
+    "test:onnx": "node run-test.mjs --root ./harness",
+    "test:onnx:quick": "node run-test.mjs --root ./harness --skip-inference",
+    "serve:onnx": "node serve.mjs ./harness",
+    "test:llm": "node run-test-llm.mjs --root ./harness-llm",
+    "test:llm:quick": "node run-test-llm.mjs --root ./harness-llm --skip-inference",
+    "serve:llm": "node serve.mjs ./harness-llm",
+    "test": "echo 'Use: npm run test:onnx or npm run test:llm'"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@wllama/wllama": "^2.3.7",
+    "node-llama-cpp": "^3.16.2",
+    "onnxruntime-web": "^1.24.2",
+    "puppeteer-core": "^24.37.5"
+  }
+}

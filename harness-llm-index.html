@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Model Delivery — LLM (wllama / GGUF) Harness</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 1.5rem; max-width: 1000px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.25rem; }
+    .subtitle { color: #94a3b8; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    .card { background: #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem; }
+    .card-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .badge { font-size: 0.65rem; padding: 2px 7px; border-radius: 6px; font-weight: 500; }
+    .badge-blue { background: #1e40af; color: #93c5fd; }
+    .badge-green { background: #166534; color: #86efac; }
+    .badge-amber { background: #92400e; color: #fcd34d; }
+    .badge-purple { background: #581c87; color: #d8b4fe; }
+    button { padding: 0.5rem 1rem; border-radius: 8px; border: none; font-weight: 500; cursor: pointer; font-size: 0.85rem; transition: all 0.15s; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-primary:hover:not(:disabled) { background: #2563eb; }
+    .btn-secondary { background: #334155; color: #e2e8f0; }
+    .btn-secondary:hover:not(:disabled) { background: #475569; }
+    .btn-danger { background: #dc2626; color: white; }
+    .btn-danger:hover:not(:disabled) { background: #b91c1c; }
+    .btn-warning { background: #d97706; color: white; }
+    .btn-warning:hover:not(:disabled) { background: #b45309; }
+    select { padding: 0.4rem 0.6rem; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 0.82rem; min-width: 180px; }
+    select:focus { outline: none; border-color: #3b82f6; }
+    select:disabled { opacity: 0.5; }
+    .controls-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .progress-panel { background: #0f172a; border-radius: 8px; padding: 0.75rem; margin: 0.75rem 0; }
+    .panel-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 0.5rem; font-weight: 600; }
+    .bar-track { background: #334155; border-radius: 4px; height: 8px; overflow: hidden; margin: 0.35rem 0; }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+    .bar-fill-green { background: linear-gradient(90deg, #22c55e, #4ade80); }
+    .stats { font-size: 0.75rem; color: #94a3b8; margin-top: 0.35rem; }
+    .stats span { color: #e2e8f0; font-weight: 500; }
+    .chat-area { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #334155; }
+    .chat-messages { max-height: 300px; overflow-y: auto; margin-bottom: 0.75rem; }
+    .chat-msg { padding: 0.5rem 0.75rem; border-radius: 8px; margin-bottom: 0.5rem; font-size: 0.85rem; line-height: 1.5; white-space: pre-wrap; }
+    .chat-user { background: #1e40af; color: #dbeafe; margin-left: 2rem; }
+    .chat-assistant { background: #334155; color: #e2e8f0; margin-right: 2rem; }
+    .chat-system { background: #422006; color: #fef3c7; font-size: 0.75rem; text-align: center; }
+    .chat-input-row { display: flex; gap: 0.5rem; }
+    .chat-input-row input { flex: 1; padding: 0.5rem 0.75rem; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 0.85rem; }
+    .chat-input-row input:focus { outline: none; border-color: #3b82f6; }
+    .model-info { font-size: 0.75rem; color: #94a3b8; margin-top: 0.5rem; }
+    .model-info code { background: #334155; padding: 1px 4px; border-radius: 3px; font-size: 0.72rem; }
+    .log-panel { background: #0f172a; border-radius: 8px; padding: 0.75rem; max-height: 200px; overflow-y: auto; font-size: 0.7rem; font-family: monospace; }
+    .log-entry { padding: 1px 0; color: #94a3b8; }
+    .log-entry.system { color: #fcd34d; }
+    .log-entry.transport { color: #86efac; }
+    .log-entry.llm { color: #d8b4fe; }
+    .log-entry.error { color: #fca5a5; }
+    @media (max-width: 700px) { body { padding: 1rem; } .controls-row { flex-direction: column; align-items: stretch; } }
+  </style>
+</head>
+<body>
+
+  <h1>Model Delivery — LLM Harness</h1>
+  <p class="subtitle">wllama (llama.cpp WASM) + GGUF model delivery via Service Worker shards</p>
+
+  <!-- SW Status -->
+  <div class="card" style="padding: 0.75rem 1.25rem;">
+    <div style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.8rem; flex-wrap: wrap;">
+      <span>SW:</span>
+      <span class="badge" id="sw-badge">Loading...</span>
+      <span id="sw-mode" style="color: #64748b;"></span>
+      <span style="flex:1"></span>
+      <button class="btn-secondary" style="padding: 0.3rem 0.6rem; font-size: 0.72rem;" onclick="clearSWCache()">Clear SW cache</button>
+      <button class="btn-secondary" style="padding: 0.3rem 0.6rem; font-size: 0.72rem;" onclick="clearWllamaCache()">Clear wllama cache</button>
+    </div>
+  </div>
+
+  <!-- LLM Model -->
+  <div class="card">
+    <div class="card-title">
+      LLM Model
+      <span class="badge badge-green" id="loaded-badge" style="display:none">Loaded</span>
+    </div>
+    <div class="controls-row">
+      <select id="manifest-select" onchange="onManifestChange()">
+        <option value="">Loading manifests...</option>
+      </select>
+      <button class="btn-primary" id="btn-load" onclick="loadModel()" disabled>Load Model</button>
+      <button class="btn-warning" id="btn-cancel" onclick="cancelLoad()" style="display:none">Cancel</button>
+      <button class="btn-danger" id="btn-unload" onclick="unloadModel()" style="display:none">Unload</button>
+      <span id="load-status" style="font-size: 0.8rem; color: #94a3b8;"></span>
+    </div>
+    <div class="model-info" id="manifest-info" style="display:none; margin-top: 0.5rem;"></div>
+
+    <!-- Transport progress -->
+    <div class="progress-panel" id="progress-panel" style="display:none">
+      <div class="panel-label">📡 Transport — Service Worker</div>
+      <div class="bar-track"><div class="bar-fill bar-fill-green" id="sw-bar" style="width:0%"></div></div>
+      <div class="stats">
+        <span id="sw-pct">0%</span> — <span id="sw-loaded">0 B</span> / <span id="sw-total">0 B</span>
+        <span id="sw-manifest-info" style="color:#64748b"></span>
+        <span id="sw-done-mark" style="color:#4ade80; display:none"> ✓ done</span>
+      </div>
+    </div>
+    <div class="model-info" id="model-info" style="display:none"></div>
+
+    <!-- Chat area -->
+    <div class="chat-area" id="chat-area" style="display:none">
+      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chat-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMessage()" />
+        <button class="btn-primary" id="btn-send" onclick="sendMessage()">Send</button>
+        <button class="btn-secondary" id="btn-stop" onclick="stopGeneration()" style="display:none">Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Event Log -->
+  <div class="card">
+    <div class="card-title">Event Log <span class="badge badge-amber" id="log-count">0 events</span></div>
+    <div class="log-panel" id="log-panel"></div>
+  </div>
+
+<script type="module">
+  let wllamaInstance = null, Wllama = null;
+  let isGenerating = false, genAbortController = null, loadAbortController = null, isLoading = false;
+  const chatHistory = [];
+  let filemapData = null, currentManifest = null;
+
+  function fmtBytes(b) {
+    if (b === 0) return '0 B';
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+    return (b / 1073741824).toFixed(2) + ' GB';
+  }
+
+  let logCount = 0;
+  function addLog(type, text) {
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const panel = document.getElementById('log-panel');
+    const el = document.createElement('div');
+    el.className = `log-entry ${type}`;
+    el.textContent = `${ts} ${text}`;
+    panel.appendChild(el);
+    panel.scrollTop = panel.scrollHeight;
+    document.getElementById('log-count').textContent = ++logCount + ' events';
+  }
+
+  function addChatMessage(role, text) {
+    const c = document.getElementById('chat-messages');
+    const el = document.createElement('div');
+    el.className = `chat-msg chat-${role}`;
+    el.textContent = text;
+    c.appendChild(el);
+    c.scrollTop = c.scrollHeight;
+    return el;
+  }
+
+  function updateLastAssistantMessage(text) {
+    const msgs = document.querySelectorAll('.chat-assistant');
+    if (msgs.length > 0) {
+      msgs[msgs.length - 1].textContent = text;
+      document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+    }
+  }
+
+  function updateUI() {
+    const sel = document.getElementById('manifest-select');
+    const loaded = !!wllamaInstance && window._modelLoaded;
+    sel.disabled = isLoading;
+    document.getElementById('btn-load').disabled = !sel.value || isLoading || loaded;
+    document.getElementById('btn-load').style.display = isLoading ? 'none' : 'inline';
+    document.getElementById('btn-cancel').style.display = isLoading ? 'inline' : 'none';
+    document.getElementById('btn-unload').style.display = loaded ? 'inline' : 'none';
+    document.getElementById('loaded-badge').style.display = loaded ? 'inline' : 'none';
+  }
+
+  // ─── Fetch filemap and populate dropdown ──────────────────
+  async function loadFilemapAndPopulate() {
+    const select = document.getElementById('manifest-select');
+    try {
+      const resp = await fetch('/pkg-gemma3/filemap.json');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      filemapData = await resp.json();
+      const manifests = filemapData.manifests || {};
+      const meta = filemapData.gguf_metadata || {};
+      select.innerHTML = '';
+      const names = Object.keys(manifests);
+      if (names.length === 0) { select.innerHTML = '<option value="">No manifests</option>'; return; }
+      names.forEach(name => {
+        const m = manifests[name];
+        const ggufMeta = meta[m.files.find(f => f.endsWith('.gguf'))];
+        const arch = ggufMeta?.architecture ? ` · ${ggufMeta.architecture}` : '';
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = `${name} (${fmtBytes(m.size)}${arch})`;
+        select.appendChild(opt);
+      });
+      select.value = names[0];
+      onManifestChange();
+      addLog('system', `Filemap: ${names.length} manifest(s) — ${names.join(', ')}`);
+    } catch (err) {
+      select.innerHTML = '<option value="">Error loading filemap</option>';
+      addLog('error', `Filemap: ${err.message}`);
+    }
+  }
+
+  window.onManifestChange = function() {
+    const name = document.getElementById('manifest-select').value;
+    const infoEl = document.getElementById('manifest-info');
+    if (!name || !filemapData) { infoEl.style.display = 'none'; updateUI(); return; }
+    const m = filemapData.manifests[name];
+    const meta = filemapData.gguf_metadata || {};
+    const parts = [];
+    for (const gf of m.files.filter(f => f.endsWith('.gguf'))) {
+      const gm = meta[gf];
+      if (gm) {
+        const d = [`<b>${gf}</b> [${gm.classification}]`];
+        if (gm.architecture) d.push(`arch: <code>${gm.architecture}</code>`);
+        if (gm.quantization) d.push(`quant: <code>${gm.quantization}</code>`);
+        if (gm.context_length) d.push(`ctx: <code>${gm.context_length}</code>`);
+        if (gm.block_count) d.push(`layers: <code>${gm.block_count}</code>`);
+        if (gm.embedding_length) d.push(`embd: <code>${gm.embedding_length}</code>`);
+        if (gm.vocab_size) d.push(`vocab: <code>${gm.vocab_size}</code>`);
+        parts.push(d.join(' · '));
+      } else parts.push(`<b>${gf}</b>`);
+    }
+    const nonGguf = m.files.filter(f => !f.endsWith('.gguf'));
+    parts.push(`<span style="color:#64748b">${nonGguf.length} config/tokenizer files · total: ${fmtBytes(m.size)}</span>`);
+    infoEl.innerHTML = parts.join('<br>');
+    infoEl.style.display = 'block';
+    updateUI();
+  };
+
+  // ─── SW setup ─────────────────────────────────────────────
+  addLog('system', 'Registering Service Worker...');
+  await navigator.serviceWorker.register('/model-sw.js', { scope: '/' });
+  await navigator.serviceWorker.ready;
+  if (!navigator.serviceWorker.controller) { addLog('system', 'SW installed, reloading...'); location.reload(); }
+
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'MODEL_SW_PROGRESS') {
+      const d = e.data;
+      document.getElementById('progress-panel').style.display = 'block';
+      document.getElementById('sw-bar').style.width = d.percent + '%';
+      document.getElementById('sw-pct').textContent = d.percent + '%';
+      document.getElementById('sw-loaded').textContent = fmtBytes(d.modelLoaded);
+      document.getElementById('sw-total').textContent = fmtBytes(d.modelTotal);
+      if (d.manifest) document.getElementById('sw-manifest-info').textContent = ` · manifest: ${d.manifest} (${d.mode})`;
+      if (d.done) document.getElementById('sw-done-mark').style.display = 'inline';
+      if (d.percent % 10 === 0 || d.done)
+        addLog('transport', `${d.percent}% ${fmtBytes(d.modelLoaded)}/${fmtBytes(d.modelTotal)} manifest:${d.manifest} mode:${d.mode}${d.done ? ' DONE' : ''}`);
+      window._lastSWProgress = d;
+    }
+    if (e.data?.type === 'MODEL_SW_CACHE_CLEARED') addLog('system', 'SW cache cleared');
+  });
+
+  function initSW(manifestName) {
+    if (!navigator.serviceWorker.controller) return;
+    navigator.serviceWorker.controller.postMessage({
+      type: 'MODEL_SW_INIT',
+      sources: [{ pathPrefix: '/models/llm/', cdnBase: `${location.origin}/pkg-gemma3`, progress: true, manifest: manifestName || '' }]
+    });
+    document.getElementById('sw-mode').textContent = manifestName ? `Mode: explicit (${manifestName})` : 'Mode: adaptive';
+  }
+
+  document.getElementById('sw-badge').textContent = 'Active';
+  document.getElementById('sw-badge').className = 'badge badge-green';
+  addLog('system', 'SW active.');
+
+  // ─── wllama import ────────────────────────────────────────
+  addLog('system', 'Importing wllama...');
+  Wllama = (await import('./wllama.js')).Wllama;
+  addLog('system', 'wllama imported.');
+
+  await loadFilemapAndPopulate();
+  updateUI();
+
+  // ─── Load model ───────────────────────────────────────────
+  window.loadModel = async function() {
+    const manifestName = document.getElementById('manifest-select').value;
+    if (!manifestName || !filemapData) return;
+    if (wllamaInstance && window._modelLoaded) {
+      addLog('system', 'Unloading current model...');
+      await window.unloadModel();
+    }
+
+    const manifest = filemapData.manifests[manifestName];
+    const meta = filemapData.gguf_metadata || {};
+    const ggufFiles = manifest.files.filter(f => f.endsWith('.gguf'));
+    const llmFiles = ggufFiles.filter(f => !meta[f] || meta[f].classification === 'llm');
+    const mmprojFiles = ggufFiles.filter(f => meta[f]?.classification === 'mmproj');
+    if (llmFiles.length === 0) { addLog('error', `No LLM GGUF in "${manifestName}"`); return; }
+
+    const llmFile = llmFiles[0];
+    const llmMeta = meta[llmFile] || {};
+    const nCtx = Math.min(llmMeta.context_length || 2048, 2048);
+
+    isLoading = true;
+    currentManifest = manifestName;
+    loadAbortController = new AbortController();
+    updateUI();
+
+    const status = document.getElementById('load-status');
+    status.textContent = 'Initializing...';
+    document.getElementById('progress-panel').style.display = 'none';
+    document.getElementById('sw-bar').style.width = '0%';
+    document.getElementById('sw-done-mark').style.display = 'none';
+    initSW(manifestName);
+    addLog('system', `Loading "${manifestName}" — LLM: ${llmFile}${mmprojFiles.length ? ' + mmproj: ' + mmprojFiles[0] : ''}`);
+
+    try {
+      const t0 = performance.now();
+      wllamaInstance = new Wllama({
+        'single-thread/wllama.wasm': './single-thread/wllama.wasm',
+        'multi-thread/wllama.wasm': './multi-thread/wllama.wasm',
+      }, {
+        suppressNativeLog: false, allowOffline: true,
+        logger: { debug: () => {}, log: (...a) => addLog('llm', a.join(' ')), warn: (...a) => addLog('llm', '⚠ ' + a.join(' ')), error: (...a) => addLog('error', '✗ ' + a.join(' ')) },
+      });
+
+      status.textContent = 'Downloading via SW shards...';
+      addLog('llm', `Loading from /models/llm/${llmFile}`);
+
+      await wllamaInstance.loadModelFromUrl(`${location.origin}/models/llm/${llmFile}`, {
+        n_ctx: nCtx, n_threads: 1, cache_type_k: 'q4_0', cache_type_v: 'q4_0', useCache: false,
+        progressCallback: ({ loaded, total }) => {
+          if (total > 0) status.textContent = `Downloading: ${Math.round(loaded / total * 100)}% (${fmtBytes(loaded)} / ${fmtBytes(total)})`;
+        },
+      });
+
+      if (loadAbortController?.signal.aborted) throw new Error('Load cancelled');
+      const ms = (performance.now() - t0).toFixed(0);
+      navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_COMPLETE', pathPrefix: '/models/llm/' });
+
+      const metadata = await wllamaInstance.getModelMetadata();
+      const infoText = `Loaded in ${ms}ms · ctx: ${nCtx} · params: ${metadata?.hparams?.nLayer || '?'}L × ${metadata?.hparams?.nEmbd || '?'}d · vocab: ${metadata?.hparams?.nVocab || '?'}`;
+      status.textContent = `Loaded (${ms}ms)`;
+      document.getElementById('model-info').style.display = 'block';
+      document.getElementById('model-info').innerHTML = infoText;
+      document.getElementById('chat-area').style.display = 'block';
+      addLog('llm', `Model loaded in ${ms}ms`);
+      addChatMessage('system', `Model loaded (${manifestName}). Type a message to start chatting.`);
+      window._modelLoaded = true;
+      window._loadTimeMs = parseInt(ms);
+    } catch (err) {
+      const cancelled = err.message?.includes('cancel') || err.message?.includes('abort') || loadAbortController?.signal.aborted;
+      status.textContent = cancelled ? 'Cancelled' : 'Error: ' + err.message;
+      addLog(cancelled ? 'system' : 'error', cancelled ? 'Load cancelled' : `Load failed: ${err.message}`);
+      if (wllamaInstance) { try { await wllamaInstance.exit(); } catch (_) {} wllamaInstance = null; }
+      window._modelError = err.message;
+    }
+    isLoading = false;
+    loadAbortController = null;
+    updateUI();
+  };
+
+  window.cancelLoad = async function() {
+    addLog('system', 'Cancelling...');
+    if (loadAbortController) loadAbortController.abort();
+    if (wllamaInstance) { try { await wllamaInstance.exit(); } catch (_) {} wllamaInstance = null; }
+    isLoading = false; loadAbortController = null; window._modelLoaded = false;
+    document.getElementById('load-status').textContent = 'Cancelled';
+    document.getElementById('chat-area').style.display = 'none';
+    document.getElementById('model-info').style.display = 'none';
+    updateUI();
+  };
+
+  window.sendMessage = async function() {
+    if (!wllamaInstance || isGenerating) return;
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    isGenerating = true;
+    document.getElementById('btn-send').style.display = 'none';
+    document.getElementById('btn-stop').style.display = 'inline';
+    addChatMessage('user', text);
+    chatHistory.push({ role: 'user', content: text });
+    addChatMessage('assistant', '▍');
+    addLog('llm', `Generating for: "${text.slice(0, 50)}..."`);
+    genAbortController = new AbortController();
+    let fullResponse = '';
+    const t0 = performance.now();
+    try {
+      const result = await wllamaInstance.createChatCompletion(chatHistory, {
+        nPredict: 256, sampling: { temp: 0.7, top_p: 0.9, top_k: 40 },
+        abortSignal: genAbortController.signal,
+        onNewToken: (token, piece, currentText) => { fullResponse = currentText; updateLastAssistantMessage(currentText + '▍'); },
+      });
+      fullResponse = result || fullResponse;
+      updateLastAssistantMessage(fullResponse);
+      chatHistory.push({ role: 'assistant', content: fullResponse });
+      addLog('llm', `Generated ${fullResponse.length} chars in ${(performance.now() - t0).toFixed(0)}ms`);
+      window._lastResponse = fullResponse;
+      window._lastResponseMs = parseInt((performance.now() - t0).toFixed(0));
+    } catch (err) {
+      if (err.name === 'AbortError' || err.message?.includes('abort')) {
+        updateLastAssistantMessage(fullResponse + ' [stopped]');
+        addLog('llm', 'Stopped by user');
+      } else {
+        updateLastAssistantMessage('Error: ' + err.message);
+        addLog('error', `Generation error: ${err.message}`);
+      }
+      window._lastResponse = fullResponse;
+    }
+    isGenerating = false;
+    document.getElementById('btn-send').style.display = 'inline';
+    document.getElementById('btn-stop').style.display = 'none';
+  };
+
+  window.stopGeneration = function() { if (genAbortController) genAbortController.abort(); };
+
+  window.unloadModel = async function() {
+    if (wllamaInstance) { try { await wllamaInstance.exit(); } catch (_) {} wllamaInstance = null; }
+    document.getElementById('load-status').textContent = 'Unloaded';
+    document.getElementById('chat-area').style.display = 'none';
+    document.getElementById('model-info').style.display = 'none';
+    document.getElementById('chat-messages').innerHTML = '';
+    chatHistory.length = 0;
+    window._modelLoaded = false;
+    addLog('system', 'Model unloaded');
+    updateUI();
+  };
+
+  window.clearSWCache = function() {
+    navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_CLEAR_CACHE' });
+    addLog('system', 'SW cache clear requested');
+  };
+
+  window.clearWllamaCache = async function() {
+    try {
+      const root = await navigator.storage.getDirectory();
+      await root.removeEntry('cache', { recursive: true });
+      addLog('system', 'wllama OPFS cache cleared');
+    } catch (err) { addLog('system', `wllama cache: ${err.message} (may be empty)`); }
+  };
+</script>
+</body>
+</html>

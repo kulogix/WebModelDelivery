@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Model Delivery — Dual Progress Harness</title>
+  <script defer src="./alpine.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.25rem; }
+    .subtitle { color: #94a3b8; font-size: 0.85rem; margin-bottom: 1.5rem; }
+    .card { background: #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem; }
+    .card-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .badge { font-size: 0.65rem; padding: 2px 7px; border-radius: 6px; font-weight: 500; }
+    .badge-blue { background: #1e40af; color: #93c5fd; }
+    .badge-green { background: #166534; color: #86efac; }
+    .badge-amber { background: #92400e; color: #fcd34d; }
+    button { padding: 0.5rem 1rem; border-radius: 8px; border: none; font-weight: 500; cursor: pointer; font-size: 0.85rem; transition: all 0.15s; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-primary:hover:not(:disabled) { background: #2563eb; }
+    .btn-secondary { background: #334155; color: #e2e8f0; }
+    .btn-secondary:hover:not(:disabled) { background: #475569; }
+    .btn-danger { background: #dc2626; color: white; }
+    .btn-danger:hover:not(:disabled) { background: #b91c1c; }
+    .btn-warning { background: #d97706; color: white; }
+    .btn-warning:hover:not(:disabled) { background: #b45309; }
+    select { padding: 0.4rem 0.6rem; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 0.82rem; min-width: 140px; }
+    select:focus { outline: none; border-color: #3b82f6; }
+    select:disabled { opacity: 0.5; }
+    .controls-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
+    .progress-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 0.75rem 0; }
+    .progress-panel { background: #0f172a; border-radius: 8px; padding: 0.75rem; min-height: 120px; }
+    .panel-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 0.5rem; font-weight: 600; }
+    .bar-track { background: #334155; border-radius: 4px; height: 8px; overflow: hidden; margin: 0.35rem 0; }
+    .bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+    .bar-fill-blue { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+    .bar-fill-green { background: linear-gradient(90deg, #22c55e, #4ade80); }
+    .file-list { font-size: 0.72rem; font-family: 'SF Mono', Consolas, monospace; max-height: 200px; overflow-y: auto; }
+    .file-row { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px solid #1e293b; align-items: center; }
+    .file-name { color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+    .file-status { font-weight: 500; }
+    .status-pending { color: #64748b; }
+    .status-loading { color: #fbbf24; }
+    .status-done { color: #4ade80; }
+    .stats { font-size: 0.75rem; color: #94a3b8; margin-top: 0.35rem; }
+    .stats span { color: #e2e8f0; font-weight: 500; }
+    .inference-area { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #334155; }
+    .result { font-size: 0.8rem; background: #0f172a; padding: 0.5rem; border-radius: 6px; margin-top: 0.5rem; }
+    .result-item { display: flex; justify-content: space-between; padding: 2px 0; }
+    .result-rank { color: #fbbf24; font-weight: 600; width: 2rem; }
+    .result-text { flex: 1; color: #cbd5e1; }
+    .result-score { color: #94a3b8; font-family: monospace; width: 4rem; text-align: right; }
+    .manifest-info { font-size: 0.72rem; color: #64748b; margin-top: 0.25rem; }
+    .log-panel { background: #0f172a; border-radius: 8px; padding: 0.75rem; max-height: 200px; overflow-y: auto; font-size: 0.7rem; font-family: monospace; }
+    .log-entry { padding: 1px 0; color: #94a3b8; }
+    .log-entry.runtime { color: #93c5fd; }
+    .log-entry.transport { color: #86efac; }
+    .log-entry.system { color: #fcd34d; }
+    .log-entry.error { color: #fca5a5; }
+    @media (max-width: 700px) { .progress-grid { grid-template-columns: 1fr; } .controls-row { flex-direction: column; align-items: stretch; } }
+  </style>
+</head>
+<body x-data="harness()">
+
+  <h1>Model Delivery — Dual Progress Harness</h1>
+  <p class="subtitle">
+    Service Worker v4 transport progress vs Transformers.js runtime lifecycle — side by side
+  </p>
+
+  <!-- SW Status -->
+  <div class="card" style="padding: 0.75rem 1.25rem;">
+    <div style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.8rem; flex-wrap: wrap;">
+      <span>SW:</span>
+      <span class="badge" :class="swReady ? 'badge-green' : 'badge-amber'" x-text="swReady ? 'Active' : 'Loading...'"></span>
+      <span style="color: #64748b;" x-show="swReady">
+        Mode: <span style="color: #e2e8f0;" x-text="embSW.mode || '—'"></span> (emb)
+        / <span style="color: #e2e8f0;" x-text="rrSW.mode || '—'"></span> (rr)
+      </span>
+      <span style="flex:1"></span>
+      <button class="btn-secondary" style="padding: 0.3rem 0.6rem; font-size: 0.72rem;" @click="clearCache">Clear cache</button>
+    </div>
+  </div>
+
+  <!-- ═══ Embedding Model ═══════════════════════════════════ -->
+  <div class="card">
+    <div class="card-title">
+      Embedding Model
+      <span class="badge badge-green" x-show="embReady">Loaded</span>
+    </div>
+
+    <div class="controls-row">
+      <select x-model="embManifestName" :disabled="embLoading" @change="onEmbManifestChange()">
+        <template x-for="opt in embManifestOptions" :key="opt.value">
+          <option :value="opt.value" x-text="opt.label"></option>
+        </template>
+      </select>
+      <button class="btn-primary" :disabled="!swReady || embLoading || embReady || !embManifestName" @click="loadEmbedding()" x-show="!embLoading">
+        <span x-text="embReady ? '✓ Loaded' : 'Load Model'"></span>
+      </button>
+      <button class="btn-warning" x-show="embLoading" @click="cancelEmbedding()">Cancel</button>
+      <button class="btn-danger" x-show="embReady" @click="unloadEmbedding()">Unload</button>
+      <span x-show="embStatusText" style="font-size: 0.8rem; color: #94a3b8;" x-text="embStatusText"></span>
+    </div>
+    <div class="manifest-info" x-show="embManifestInfo" x-html="embManifestInfo"></div>
+
+    <div class="progress-grid" x-show="embLoading || embReady">
+      <!-- Runtime panel -->
+      <div class="progress-panel">
+        <div class="panel-label">🧠 Runtime — Transformers.js</div>
+        <div class="bar-track"><div class="bar-fill bar-fill-blue" :style="'width:' + embRT.percent + '%'"></div></div>
+        <div class="stats">
+          <span x-text="embRT.percent + '%'"></span> — <span x-text="embRT.status"></span>
+          <template x-if="embRT.currentFile">
+            <span style="color:#64748b"> · <span x-text="embRT.currentFile"></span></span>
+          </template>
+        </div>
+        <div class="file-list" x-show="Object.keys(embRT.files).length > 0">
+          <template x-for="(info, fname) in embRT.files" :key="fname">
+            <div class="file-row">
+              <span class="file-name" x-text="fname"></span>
+              <span class="file-status"
+                :class="info.status === 'done' ? 'status-done' : info.status === 'progress' ? 'status-loading' : 'status-pending'"
+                x-text="info.status === 'progress' ? info.progress + '%' : info.status"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+      <!-- Transport panel -->
+      <div class="progress-panel">
+        <div class="panel-label">📡 Transport — Service Worker</div>
+        <div class="bar-track"><div class="bar-fill bar-fill-green" :style="'width:' + embSW.percent + '%'"></div></div>
+        <div class="stats">
+          <span x-text="embSW.percent + '%'"></span> — <span x-text="fmtBytes(embSW.loaded)"></span> / <span x-text="fmtBytes(embSW.total)"></span>
+          <template x-if="embSW.manifest">
+            <span style="color:#64748b"> · manifest: <span style="color:#fcd34d" x-text="embSW.manifest"></span></span>
+          </template>
+          <template x-if="embSW.done"><span style="color:#4ade80"> ✓ done</span></template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Embedding Inference -->
+    <div class="inference-area" x-show="embReady">
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <input type="text" x-model="embQuery" placeholder="Enter text to embed..."
+          style="flex:1; padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; font-size: 0.85rem;" />
+        <button class="btn-secondary" @click="runEmbedding()" :disabled="!embQuery.trim()">Embed</button>
+      </div>
+      <div class="result" x-show="embResult" x-text="embResult"></div>
+    </div>
+  </div>
+
+  <!-- ═══ Reranker Model ════════════════════════════════════ -->
+  <div class="card">
+    <div class="card-title">
+      Reranker Model
+      <span class="badge badge-green" x-show="rrReady">Loaded</span>
+    </div>
+
+    <div class="controls-row">
+      <select x-model="rrManifestName" :disabled="rrLoading" @change="onRrManifestChange()">
+        <template x-for="opt in rrManifestOptions" :key="opt.value">
+          <option :value="opt.value" x-text="opt.label"></option>
+        </template>
+      </select>
+      <button class="btn-primary" :disabled="!swReady || rrLoading || rrReady || !rrManifestName" @click="loadReranker()" x-show="!rrLoading">
+        <span x-text="rrReady ? '✓ Loaded' : 'Load Model'"></span>
+      </button>
+      <button class="btn-warning" x-show="rrLoading" @click="cancelReranker()">Cancel</button>
+      <button class="btn-danger" x-show="rrReady" @click="unloadReranker()">Unload</button>
+      <span x-show="rrStatusText" style="font-size: 0.8rem; color: #94a3b8;" x-text="rrStatusText"></span>
+    </div>
+    <div class="manifest-info" x-show="rrManifestInfo" x-html="rrManifestInfo"></div>
+
+    <div class="progress-grid" x-show="rrLoading || rrReady">
+      <div class="progress-panel">
+        <div class="panel-label">🧠 Runtime — Transformers.js</div>
+        <div class="bar-track"><div class="bar-fill bar-fill-blue" :style="'width:' + rrRT.percent + '%'"></div></div>
+        <div class="stats">
+          <span x-text="rrRT.percent + '%'"></span> — <span x-text="rrRT.status"></span>
+          <template x-if="rrRT.currentFile">
+            <span style="color:#64748b"> · <span x-text="rrRT.currentFile"></span></span>
+          </template>
+        </div>
+        <div class="file-list" x-show="Object.keys(rrRT.files).length > 0">
+          <template x-for="(info, fname) in rrRT.files" :key="fname">
+            <div class="file-row">
+              <span class="file-name" x-text="fname"></span>
+              <span class="file-status"
+                :class="info.status === 'done' ? 'status-done' : info.status === 'progress' ? 'status-loading' : 'status-pending'"
+                x-text="info.status === 'progress' ? info.progress + '%' : info.status"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+      <div class="progress-panel">
+        <div class="panel-label">📡 Transport — Service Worker</div>
+        <div class="bar-track"><div class="bar-fill bar-fill-green" :style="'width:' + rrSW.percent + '%'"></div></div>
+        <div class="stats">
+          <span x-text="rrSW.percent + '%'"></span> — <span x-text="fmtBytes(rrSW.loaded)"></span> / <span x-text="fmtBytes(rrSW.total)"></span>
+          <template x-if="rrSW.manifest">
+            <span style="color:#64748b"> · manifest: <span style="color:#fcd34d" x-text="rrSW.manifest"></span></span>
+          </template>
+          <template x-if="rrSW.done"><span style="color:#4ade80"> ✓ done</span></template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reranker Inference -->
+    <div class="inference-area" x-show="rrReady">
+      <button class="btn-secondary" @click="runReranker()" :disabled="rrRanking">Rerank sample docs</button>
+      <div class="result" x-show="rrResults.length > 0">
+        <template x-for="(r, i) in rrResults" :key="i">
+          <div class="result-item">
+            <span class="result-rank" x-text="'#' + (i+1)"></span>
+            <span class="result-text" x-text="r.text"></span>
+            <span class="result-score" x-text="r.score.toFixed(4)"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <!-- Event Log -->
+  <div class="card">
+    <div class="card-title">Event Log <span class="badge badge-amber" x-text="log.length + ' events'"></span></div>
+    <div class="log-panel" x-ref="logPanel">
+      <template x-for="(entry, i) in log.slice(-80)" :key="i">
+        <div class="log-entry" :class="entry.type" x-text="entry.text"></div>
+      </template>
+    </div>
+  </div>
+
+<script>
+  let AutoModel, AutoTokenizer, AutoModelForSequenceClassification;
+  const tfReady = new Promise((resolve) => { window._resolveTF = resolve; });
+
+  function harness() {
+    return {
+      swReady: false,
+      // Embedding state
+      embLoading: false, embReady: false, embQuery: 'Hello world', embResult: '', embStatusText: '',
+      embManifestName: '', embManifestOptions: [{ value: '', label: 'Loading...' }],
+      embManifestInfo: '', embFilemap: null, embCancelled: false,
+      embRT: { percent: 0, status: 'idle', currentFile: '', files: {} },
+      embSW: { percent: 0, loaded: 0, total: 0, done: false, manifest: null, mode: '' },
+      _embModel: null, _embTokenizer: null,
+      // Reranker state
+      rrLoading: false, rrReady: false, rrRanking: false, rrResults: [], rrStatusText: '',
+      rrManifestName: '', rrManifestOptions: [{ value: '', label: 'Loading...' }],
+      rrManifestInfo: '', rrFilemap: null, rrCancelled: false,
+      rrRT: { percent: 0, status: 'idle', currentFile: '', files: {} },
+      rrSW: { percent: 0, loaded: 0, total: 0, done: false, manifest: null, mode: '' },
+      _rrModel: null, _rrTokenizer: null,
+      log: [],
+
+      // ─── Init ──────────────────────────────────────────
+      async init() {
+        this.addLog('system', 'Loading Transformers.js runtime...');
+        const mod = await import('./transformers.js');
+        AutoModel = mod.AutoModel;
+        AutoTokenizer = mod.AutoTokenizer;
+        AutoModelForSequenceClassification = mod.AutoModelForSequenceClassification;
+        mod.env.allowRemoteModels = false;
+        mod.env.allowLocalModels = true;
+        mod.env.backends.onnx.wasm.wasmPaths = './';
+        mod.env.backends.onnx.wasm.numThreads = 1;
+        window._resolveTF();
+        this.addLog('system', 'Transformers.js loaded. Registering SW...');
+        await navigator.serviceWorker.register('/model-sw.js', { scope: '/' });
+        await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) {
+          this.addLog('system', 'SW installed, reloading...');
+          location.reload();
+          return;
+        }
+
+        navigator.serviceWorker.addEventListener('message', (e) => {
+          if (e.data?.type === 'MODEL_SW_PROGRESS') {
+            const d = e.data;
+            if (d.pathPrefix.includes('embedding')) {
+              this.embSW = { percent: d.percent, loaded: d.modelLoaded, total: d.modelTotal, done: d.done, manifest: d.manifest, mode: d.mode };
+              if (d.percent % 10 === 0 || d.done) this.addLog('transport', `[emb] ${d.percent}% ${this.fmtBytes(d.modelLoaded)}/${this.fmtBytes(d.modelTotal)} manifest:${d.manifest} mode:${d.mode}${d.done ? ' DONE' : ''}`);
+            } else if (d.pathPrefix.includes('reranker')) {
+              this.rrSW = { percent: d.percent, loaded: d.modelLoaded, total: d.modelTotal, done: d.done, manifest: d.manifest, mode: d.mode };
+              if (d.percent % 10 === 0 || d.done) this.addLog('transport', `[rr] ${d.percent}% ${this.fmtBytes(d.modelLoaded)}/${this.fmtBytes(d.modelTotal)} manifest:${d.manifest}${d.done ? ' DONE' : ''}`);
+            }
+          }
+        });
+
+        // Fetch filemaps for dropdown population
+        await Promise.all([this.fetchFilemap('embedding'), this.fetchFilemap('reranker')]);
+
+        // Init SW with current selections
+        this.reinitSW();
+        this.swReady = true;
+        this.addLog('system', 'SW active.');
+      },
+
+      // ─── Fetch filemap and populate dropdown ───────────
+      async fetchFilemap(which) {
+        const pkgName = which === 'embedding' ? 'pkg-embedding' : 'pkg-reranker';
+        try {
+          const resp = await fetch(`/${pkgName}/filemap.json`);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const fm = await resp.json();
+          const manifests = fm.manifests || {};
+          const names = Object.keys(manifests);
+
+          if (which === 'embedding') {
+            this.embFilemap = fm;
+            this.embManifestOptions = names.length > 0
+              ? names.map(n => ({ value: n, label: `${n} (${this.fmtBytes(manifests[n].size)})` }))
+              : [{ value: '', label: 'No manifests' }];
+            this.embManifestName = names[0] || '';
+            this.onEmbManifestChange();
+          } else {
+            this.rrFilemap = fm;
+            this.rrManifestOptions = names.length > 0
+              ? names.map(n => ({ value: n, label: `${n} (${this.fmtBytes(manifests[n].size)})` }))
+              : [{ value: '', label: 'No manifests' }];
+            this.rrManifestName = names[0] || '';
+            this.onRrManifestChange();
+          }
+          this.addLog('system', `${which} filemap: ${names.length} manifest(s) — ${names.join(', ')}`);
+        } catch (err) {
+          if (which === 'embedding') {
+            this.embManifestOptions = [{ value: '', label: 'Error loading' }];
+          } else {
+            this.rrManifestOptions = [{ value: '', label: 'Error loading' }];
+          }
+          this.addLog('error', `${which} filemap: ${err.message}`);
+        }
+      },
+
+      onEmbManifestChange() {
+        if (!this.embManifestName || !this.embFilemap) { this.embManifestInfo = ''; return; }
+        const m = this.embFilemap.manifests[this.embManifestName];
+        this.embManifestInfo = `${m.files.length} files · ${this.fmtBytes(m.size)}`;
+      },
+
+      onRrManifestChange() {
+        if (!this.rrManifestName || !this.rrFilemap) { this.rrManifestInfo = ''; return; }
+        const m = this.rrFilemap.manifests[this.rrManifestName];
+        this.rrManifestInfo = `${m.files.length} files · ${this.fmtBytes(m.size)}`;
+      },
+
+      reinitSW() {
+        if (!navigator.serviceWorker.controller) return;
+        navigator.serviceWorker.controller.postMessage({
+          type: 'MODEL_SW_INIT',
+          sources: [
+            { pathPrefix: '/models/embedding/', cdnBase: `${location.origin}/pkg-embedding`, progress: true, manifest: this.embManifestName || '' },
+            { pathPrefix: '/models/reranker/',  cdnBase: `${location.origin}/pkg-reranker`,  progress: true, manifest: this.rrManifestName || '' },
+          ],
+        });
+      },
+
+      // ─── Progress callback builder ─────────────────────
+      makeProgressCallback(rt, label) {
+        return (info) => {
+          const file = info.file || '';
+          const shortFile = file.split('/').pop() || file;
+          switch (info.status) {
+            case 'initiate':
+              rt.files[shortFile] = { status: 'initiate', progress: 0 };
+              rt.currentFile = shortFile;
+              this.addLog('runtime', `[${label}] initiate: ${shortFile}`);
+              break;
+            case 'download':
+              if (rt.files[shortFile]) rt.files[shortFile].status = 'download';
+              this.addLog('runtime', `[${label}] download: ${shortFile}`);
+              break;
+            case 'progress':
+              if (rt.files[shortFile]) {
+                rt.files[shortFile].status = 'progress';
+                rt.files[shortFile].progress = Math.round(info.progress || 0);
+              }
+              rt.currentFile = shortFile;
+              const entries = Object.values(rt.files);
+              rt.percent = entries.length > 0 ? Math.round(entries.reduce((a, e) => a + (e.status === 'done' ? 100 : (e.progress || 0)), 0) / entries.length) : 0;
+              rt.status = `downloading ${shortFile}`;
+              break;
+            case 'done':
+              if (rt.files[shortFile]) { rt.files[shortFile].status = 'done'; rt.files[shortFile].progress = 100; }
+              this.addLog('runtime', `[${label}] done: ${shortFile}`);
+              const entries2 = Object.values(rt.files);
+              rt.percent = entries2.length > 0 ? Math.round(entries2.reduce((a, e) => a + (e.status === 'done' ? 100 : (e.progress || 0)), 0) / entries2.length) : 100;
+              rt.status = 'loading...';
+              break;
+            case 'ready':
+              rt.percent = 100; rt.status = 'ready ✓'; rt.currentFile = '';
+              this.addLog('runtime', `[${label}] READY`);
+              break;
+          }
+        };
+      },
+
+      // ─── Load embedding ────────────────────────────────
+      async loadEmbedding() {
+        if (this.embReady) await this.unloadEmbedding();
+        this.embLoading = true;
+        this.embCancelled = false;
+        this.embStatusText = 'Starting...';
+        this.embRT = { percent: 0, status: 'starting...', currentFile: '', files: {} };
+        this.embSW = { percent: 0, loaded: 0, total: 0, done: false, manifest: null, mode: '' };
+        this.reinitSW();
+        this.addLog('system', `Loading embedding (manifest: ${this.embManifestName})...`);
+        await tfReady;
+        const t0 = performance.now();
+        try {
+          const cb = this.makeProgressCallback(this.embRT, 'emb');
+          this._embTokenizer = await AutoTokenizer.from_pretrained('/models/embedding/', { progress_callback: cb });
+          if (this.embCancelled) throw new Error('Cancelled');
+          this._embModel = await AutoModel.from_pretrained('/models/embedding/', { dtype: this.embManifestName || 'q4f16', progress_callback: cb });
+          if (this.embCancelled) throw new Error('Cancelled');
+          const ms = (performance.now() - t0).toFixed(0);
+          this.embReady = true;
+          this.embStatusText = `Loaded (${ms}ms)`;
+          this.embRT.status = `ready ✓ (${ms}ms)`;
+          this.embRT.percent = 100;
+          navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_COMPLETE', pathPrefix: '/models/embedding/' });
+          this.addLog('system', `Embedding loaded in ${ms}ms`);
+        } catch (err) {
+          if (this.embCancelled || err.message?.includes('Cancel')) {
+            this.embStatusText = 'Cancelled';
+            this.addLog('system', 'Embedding load cancelled');
+            this.disposeEmb();
+          } else {
+            this.embRT.status = 'error: ' + err.message;
+            this.embStatusText = 'Error';
+            this.addLog('error', `Embedding ERROR: ${err.message}`);
+          }
+        }
+        this.embLoading = false;
+      },
+
+      cancelEmbedding() {
+        this.embCancelled = true;
+        this.addLog('system', 'Cancelling embedding load...');
+      },
+
+      async unloadEmbedding() {
+        this.disposeEmb();
+        this.embReady = false;
+        this.embResult = '';
+        this.embStatusText = 'Unloaded';
+        this.embRT = { percent: 0, status: 'idle', currentFile: '', files: {} };
+        this.addLog('system', 'Embedding unloaded');
+      },
+
+      disposeEmb() {
+        try { if (this._embModel?.dispose) this._embModel.dispose(); } catch (_) {}
+        try { if (this._embTokenizer?.dispose) this._embTokenizer.dispose(); } catch (_) {}
+        this._embModel = null;
+        this._embTokenizer = null;
+      },
+
+      // ─── Load reranker ─────────────────────────────────
+      async loadReranker() {
+        if (this.rrReady) await this.unloadReranker();
+        this.rrLoading = true;
+        this.rrCancelled = false;
+        this.rrStatusText = 'Starting...';
+        this.rrRT = { percent: 0, status: 'starting...', currentFile: '', files: {} };
+        this.rrSW = { percent: 0, loaded: 0, total: 0, done: false, manifest: null, mode: '' };
+        this.reinitSW();
+        this.addLog('system', `Loading reranker (manifest: ${this.rrManifestName})...`);
+        await tfReady;
+        const t0 = performance.now();
+        try {
+          const cb = this.makeProgressCallback(this.rrRT, 'rr');
+          this._rrTokenizer = await AutoTokenizer.from_pretrained('/models/reranker/', { progress_callback: cb });
+          if (this.rrCancelled) throw new Error('Cancelled');
+          this._rrModel = await AutoModelForSequenceClassification.from_pretrained('/models/reranker/', { quantized: true, progress_callback: cb });
+          if (this.rrCancelled) throw new Error('Cancelled');
+          const ms = (performance.now() - t0).toFixed(0);
+          this.rrReady = true;
+          this.rrStatusText = `Loaded (${ms}ms)`;
+          this.rrRT.status = `ready ✓ (${ms}ms)`;
+          this.rrRT.percent = 100;
+          navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_COMPLETE', pathPrefix: '/models/reranker/' });
+          this.addLog('system', `Reranker loaded in ${ms}ms`);
+        } catch (err) {
+          if (this.rrCancelled || err.message?.includes('Cancel')) {
+            this.rrStatusText = 'Cancelled';
+            this.addLog('system', 'Reranker load cancelled');
+            this.disposeRr();
+          } else {
+            this.rrRT.status = 'error: ' + err.message;
+            this.rrStatusText = 'Error';
+            this.addLog('error', `Reranker ERROR: ${err.message}`);
+          }
+        }
+        this.rrLoading = false;
+      },
+
+      cancelReranker() {
+        this.rrCancelled = true;
+        this.addLog('system', 'Cancelling reranker load...');
+      },
+
+      async unloadReranker() {
+        this.disposeRr();
+        this.rrReady = false;
+        this.rrResults = [];
+        this.rrStatusText = 'Unloaded';
+        this.rrRT = { percent: 0, status: 'idle', currentFile: '', files: {} };
+        this.addLog('system', 'Reranker unloaded');
+      },
+
+      disposeRr() {
+        try { if (this._rrModel?.dispose) this._rrModel.dispose(); } catch (_) {}
+        try { if (this._rrTokenizer?.dispose) this._rrTokenizer.dispose(); } catch (_) {}
+        this._rrModel = null;
+        this._rrTokenizer = null;
+      },
+
+      // ─── Inference ─────────────────────────────────────
+      async runEmbedding() {
+        if (!this._embModel || !this._embTokenizer) return;
+        const t0 = performance.now();
+        const inputs = await this._embTokenizer(this.embQuery, { padding: true, truncation: true });
+        const output = await this._embModel(inputs);
+        const vec = Array.from(output.last_hidden_state.data).slice(0, 5).map(v => v.toFixed(4));
+        const dims = output.last_hidden_state.dims;
+        const ms = (performance.now() - t0).toFixed(0);
+        this.embResult = `${dims[1]}d vector in ${ms}ms → [${vec.join(', ')}, ...]`;
+      },
+
+      async runReranker() {
+        if (!this._rrModel || !this._rrTokenizer) return;
+        this.rrRanking = true;
+        const query = 'What is the capital of France?';
+        const docs = [
+          'Berlin is the capital of Germany.',
+          'Paris is the capital and largest city of France.',
+          'The Eiffel Tower is in Paris.',
+          'France is known for its cuisine and wine.',
+        ];
+        const t0 = performance.now();
+        try {
+          const scores = [];
+          for (const doc of docs) {
+            const inputs = await this._rrTokenizer(query, { text_pair: doc, padding: true, truncation: true });
+            const output = await this._rrModel(inputs);
+            scores.push(output.logits.data[0]);
+          }
+          const ranked = docs.map((text, i) => ({ text, score: scores[i] })).sort((a, b) => b.score - a.score);
+          const ms = (performance.now() - t0).toFixed(0);
+          this.rrResults = ranked;
+          this.addLog('system', `Rerank done in ${ms}ms: #1 "${ranked[0].text.slice(0, 40)}..."`);
+        } catch (err) {
+          this.addLog('error', `Rerank error: ${err.message}`);
+        }
+        this.rrRanking = false;
+      },
+
+      // ─── Utilities ─────────────────────────────────────
+      clearCache() {
+        navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_CLEAR_CACHE' });
+        this.addLog('system', 'Cache clear requested');
+      },
+
+      addLog(type, text) {
+        const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 1 });
+        this.log.push({ type, text: `${ts} ${text}` });
+        this.$nextTick(() => { const p = this.$refs.logPanel; if (p) p.scrollTop = p.scrollHeight; });
+      },
+
+      fmtBytes(b) {
+        if (b === 0) return '0 B';
+        if (b < 1024) return b + ' B';
+        if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+        return (b / 1048576).toFixed(1) + ' MB';
+      },
+    };
+  }
+</script>
+</body>
+</html>

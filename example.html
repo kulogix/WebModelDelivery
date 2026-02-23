@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebModelDelivery — Minimal Example</title>
+  <style>
+    body { font-family: system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+    #progress { width: 100%; height: 24px; background: #1e293b; border-radius: 6px; overflow: hidden; display: none; }
+    #progress-bar { height: 100%; background: #3b82f6; transition: width 0.2s; width: 0%; }
+    #progress-text { text-align: center; margin: 4px 0; font-size: 0.85rem; color: #64748b; }
+    #output { background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: 8px;
+              font-family: monospace; font-size: 0.85rem; min-height: 80px; white-space: pre-wrap; }
+    button { padding: 10px 20px; font-size: 1rem; cursor: pointer; border-radius: 6px;
+             border: none; background: #3b82f6; color: white; margin: 4px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <h2>Embedding Model — Minimal Example</h2>
+  <p>
+    Loads <code>embeddinggemma-300m</code> (q4f16, ~193 MB) through the Service Worker
+    from local packaged shards. Shows SW progress during download.
+  </p>
+
+  <div id="progress"><div id="progress-bar"></div></div>
+  <div id="progress-text"></div>
+
+  <button id="btn-load" onclick="loadModel()">Load Model</button>
+  <button id="btn-run" onclick="runEmbedding()" disabled>Generate Embedding</button>
+
+  <div id="output">Click "Load Model" to start.</div>
+
+  <!--
+    Required files in the same directory:
+      - model-sw.js          (Service Worker)
+      - transformers.js       (from @huggingface/transformers npm package)
+      - ort-wasm-simd-*.wasm  (from onnxruntime-web npm package)
+      - ort-wasm-simd-*.mjs   (from onnxruntime-web npm package)
+      - pkg-mymodel/          (output of model-packager.sh)
+        ├── filemap.json
+        └── *.shard.*
+
+    CDN alternative: replace location.origin with your CDN URL:
+      cdnBase: 'https://cdn.jsdelivr.net/gh/user/repo@tag'
+  -->
+
+  <script type="module">
+    // ─── Step 1: Register Service Worker ─────────────────────────────────
+    // The SW intercepts requests to /models/... and serves them from CDN shards.
+
+    const swReg = await navigator.serviceWorker.register('/model-sw.js', { scope: '/' });
+    await navigator.serviceWorker.ready;
+
+    // If first install, may need to reload so the SW can intercept
+    if (!navigator.serviceWorker.controller) {
+      location.reload();
+    }
+
+    // ─── Step 2: Configure sources ───────────────────────────────────────
+    // pathPrefix: the URL path your ML framework will request
+    // cdnBase: where the packaged shards actually live
+    // progress: opt-in to SW progress messages
+    // manifest: which manifest to use for progress denominator (optional)
+
+    navigator.serviceWorker.controller.postMessage({
+      type: 'MODEL_SW_INIT',
+      sources: [{
+        pathPrefix: '/models/embedding/',
+        cdnBase: `${location.origin}/pkg-embedding`,  // or your CDN URL
+        progress: true,
+        manifest: 'q4f16',    // matches manifest name in filemap.json
+      }]
+    });
+
+    // ─── Step 3: Listen for progress (optional) ──────────────────────────
+
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type === 'MODEL_SW_PROGRESS') {
+        const { percent, modelLoaded, modelTotal, done, manifest, mode } = e.data;
+
+        document.getElementById('progress').style.display = 'block';
+        document.getElementById('progress-bar').style.width = percent + '%';
+
+        const loaded = (modelLoaded / 1048576).toFixed(1);
+        const total = (modelTotal / 1048576).toFixed(1);
+        document.getElementById('progress-text').textContent =
+          done ? `Complete — ${loaded} MB` : `${percent}% — ${loaded} / ${total} MB (${mode}:${manifest})`;
+      }
+    });
+
+    // ─── Step 4: Load model with Transformers.js ─────────────────────────
+    // Import Transformers.js dynamically so it doesn't block page load.
+
+    let AutoTokenizer, AutoModel, tokenizer, model;
+
+    window.loadModel = async function() {
+      const btn = document.getElementById('btn-load');
+      btn.disabled = true;
+      document.getElementById('output').textContent = 'Importing Transformers.js...';
+
+      // Dynamic import — transformers.js must be in the same directory
+      const tf = await import('./transformers.js');
+      AutoTokenizer = tf.AutoTokenizer;
+      AutoModel = tf.AutoModel;
+
+      document.getElementById('output').textContent = 'Loading model (downloading shards)...';
+
+      // The SW intercepts these requests and reassembles from shards.
+      // Transformers.js doesn't know about the SW — it just sees normal files.
+      tokenizer = await AutoTokenizer.from_pretrained('/models/embedding/');
+      model = await AutoModel.from_pretrained('/models/embedding/', {
+        dtype: 'q4f16',
+        // Optional: Transformers.js own progress callback (runs alongside SW progress)
+        progress_callback: (info) => {
+          if (info.status === 'progress') {
+            const file = info.file?.split('/').pop() || '';
+            document.getElementById('output').textContent =
+              `Downloading ${file}: ${info.progress?.toFixed(0)}%`;
+          } else if (info.status === 'ready') {
+            document.getElementById('output').textContent = 'Model ready!';
+          }
+        },
+      });
+
+      // Signal to SW that loading is complete (finalizes progress at 100%)
+      navigator.serviceWorker.controller?.postMessage({
+        type: 'MODEL_SW_COMPLETE',
+        pathPrefix: '/models/embedding/',
+      });
+
+      document.getElementById('btn-run').disabled = false;
+      document.getElementById('output').textContent = 'Model loaded! Click "Generate Embedding" to test.';
+    };
+
+    // ─── Step 5: Run inference ───────────────────────────────────────────
+
+    window.runEmbedding = async function() {
+      const text = 'The quick brown fox jumps over the lazy dog.';
+      const t0 = performance.now();
+
+      const inputs = await tokenizer(text, { padding: true, truncation: true });
+      const output = await model(inputs);
+
+      // Extract embedding vector (mean pooling over token dimension)
+      const data = output.last_hidden_state.data;
+      const [batch, tokens, dims] = output.last_hidden_state.dims;
+      const embedding = new Float32Array(dims);
+      for (let d = 0; d < dims; d++) {
+        let sum = 0;
+        for (let t = 0; t < tokens; t++) sum += data[t * dims + d];
+        embedding[d] = sum / tokens;
+      }
+
+      const ms = (performance.now() - t0).toFixed(0);
+      const preview = Array.from(embedding.slice(0, 6)).map(v => v.toFixed(4)).join(', ');
+      document.getElementById('output').textContent =
+        `"${text}"\n\n→ ${dims}d embedding in ${ms}ms\n→ [${preview}, ...]`;
+    };
+  </script>
+</body>
+</html>
