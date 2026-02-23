@@ -774,7 +774,7 @@ fi
 
 
 # =============================================================================
-# Phase 5b: Generate manifests (with GGUF metadata extraction)
+# Phase 5b: Generate manifests (with GGUF + ONNX metadata extraction)
 # =============================================================================
 # Two modes:
 #   --manifest NAME: all files from THIS run → named manifest.
@@ -786,8 +786,15 @@ fi
 #   - Auto-generates cross-permutation manifests (LLM-only + LLM+mmproj combos)
 #   - Stores metadata in filemap.json under "gguf_metadata"
 #
+# For ONNX files, if onnx-meta.py is present:
+#   - Reads config.json and other repo metadata files
+#   - Classifies model task type (embedding, reranker, text-classification, etc.)
+#   - Identifies the correct Transformers.js AutoModel class
+#   - Stores metadata in filemap.json under "onnx_metadata"
+#
 # In merge mode, existing manifests are preserved; new ones are added/updated.
 GGUF_META_PY="$SCRIPT_DIR/gguf-meta.py"
+ONNX_META_PY="$SCRIPT_DIR/onnx-meta.py"
 python3 -c "
 import json, re, sys, os, subprocess
 
@@ -795,6 +802,7 @@ manifest_name = '$MANIFEST_NAME'
 is_merge = '$MERGE' == 'true'
 output_dir = '$OUTPUT_DIR'
 gguf_meta_py = '$GGUF_META_PY'
+onnx_meta_py = '$ONNX_META_PY'
 
 with open(os.path.join(output_dir, 'filemap.json')) as f:
     fm = json.load(f)
@@ -923,11 +931,45 @@ else:
     # ── Build manifests ──
     manifests = dict(existing_manifests)
 
-    # ONNX manifests (unchanged logic)
+    # ONNX manifests — store onnx_stem for direct TF.js model_file_name loading.
+    # The harness passes onnx_stem to from_pretrained({ model_file_name: stem }),
+    # which makes TF.js request the exact ONNX file — no dtype guessing needed.
+    #
+    # Also infer a display-friendly dtype for the UI:
+    #   model.onnx / model_O1.onnx → fp32   (base / graph-optimized)
+    #   model_fp16.onnx             → fp16
+    #   model_quantized.onnx        → q8
+    #   model_qint8_*.onnx          → int8   (platform-specific)
+    #   model_quint8_*.onnx         → uint8  (platform-specific)
+    #   model_q4.onnx               → q4
+    #   model_q4f16.onnx            → q4f16
+    def infer_onnx_dtype(stem):
+        '''Infer Transformers.js-compatible dtype from ONNX filename stem.'''
+        s = stem.lower()
+        if s == 'model' or re.match(r'model_o\d+$', s):
+            return 'fp32'
+        if 'fp16' in s: return 'fp16'
+        if 'q4f16' in s: return 'q4f16'
+        if 'q4' in s: return 'q4'
+        if 'bnb4' in s or 'int4' in s: return 'q4'
+        if 'quantized' in s or 'qint8' in s: return 'q8'
+        if 'quint8' in s: return 'uint8'
+        if 'int8' in s: return 'int8'
+        return 'fp32'  # safe default
+
     for name, group_files in sorted(onnx_groups.items()):
         manifest_files = sorted(set(shared + group_files))
         manifest_size = sum(files[vp]['size'] for vp in manifest_files if vp in files)
-        manifests[name] = {'files': manifest_files, 'size': manifest_size}
+        # Find the actual ONNX filename stem (e.g. "model_qint8_arm64")
+        onnx_file = next((f for f in group_files if f.endswith('.onnx')), None)
+        onnx_stem = re.sub(r'\.onnx$', '', onnx_file.rsplit('/', 1)[-1]) if onnx_file else 'model'
+        dtype = infer_onnx_dtype(onnx_stem)
+        manifests[name] = {
+            'files': manifest_files,
+            'size': manifest_size,
+            'onnx_stem': onnx_stem,  # pass to TF.js as model_file_name
+            'dtype': dtype,           # display hint
+        }
 
     # GGUF LLM-only manifests
     for norm_name, group in sorted(gguf_llm.items()):
@@ -961,6 +1003,30 @@ else:
 if gguf_metadata_all:
     fm['gguf_metadata'] = gguf_metadata_all
 
+# ── Extract and store ONNX metadata ──
+has_onnx_meta = os.path.isfile(onnx_meta_py)
+has_onnx_files = any(vp.endswith('.onnx') or vp.endswith('.onnx_data') for vp in files)
+onnx_metadata = None
+
+if has_onnx_meta and has_onnx_files:
+    # onnx-meta.py needs a directory with config.json.
+    # The output dir has config.json (flat), so we can run it there.
+    # But we also want to pass the virtual path list for better detection.
+    try:
+        result = subprocess.run(
+            [sys.executable, onnx_meta_py, '--json', output_dir],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            onnx_metadata = json.loads(result.stdout)
+            if onnx_metadata and not onnx_metadata.get('error'):
+                # Remove fields that are redundant with filemap structure
+                for drop_key in ('onnx_variants',):
+                    onnx_metadata.pop(drop_key, None)
+                fm['onnx_metadata'] = onnx_metadata
+    except Exception as e:
+        print(f'  ⚠ ONNX metadata extraction failed: {e}', file=sys.stderr)
+
 fm['manifests'] = manifests
 
 with open(os.path.join(output_dir, 'filemap.json'), 'w') as f:
@@ -986,6 +1052,30 @@ if gguf_metadata_all:
         embd = meta.get('embedding_length', '?')
         vocab = meta.get('vocab_size', '?')
         print(f'  GGUF [{cls}] {key}: arch={arch} quant={quant} ctx={ctx} layers={blocks} embd={embd} vocab={vocab}')
+
+# ── ONNX metadata summary ──
+if onnx_metadata and not onnx_metadata.get('error'):
+    cls = onnx_metadata.get('classification', '?')
+    arch = onnx_metadata.get('architecture', '?')
+    mtype = onnx_metadata.get('model_type', '?')
+    hidden = onnx_metadata.get('hidden_size', '?')
+    layers = onnx_metadata.get('num_hidden_layers', '?')
+    heads = onnx_metadata.get('num_attention_heads', '?')
+    vocab = onnx_metadata.get('vocab_size', '?')
+    maxlen = onnx_metadata.get('max_position_embeddings', onnx_metadata.get('model_max_length', '?'))
+    automodel = onnx_metadata.get('auto_model_class', '?')
+    labels_info = ''
+    if 'labels' in onnx_metadata:
+        labels = onnx_metadata['labels']
+        if len(labels) <= 5:
+            joined = ', '.join(labels)
+            labels_info = f' labels=[{joined}]'
+        else:
+            joined = ', '.join(labels[:3])
+            rest = len(labels) - 3
+            labels_info = f' labels=[{joined}, ...+{rest}]'
+    print(f'  ONNX [{cls}] arch={arch} type={mtype} hidden={hidden} layers={layers} heads={heads} vocab={vocab} maxlen={maxlen}{labels_info}')
+    print(f'    → AutoModel: {automodel}')
 
 # ── Cross-permutation warnings ──
 if cross_combos:

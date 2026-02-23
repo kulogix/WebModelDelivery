@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebModelDelivery — Unified Harness</title>
+  <script>
+    const DEPS = {
+      transformersJs: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1',
+      wllamaJs:       'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.7/esm/index.js',
+      wllamaWasmST:   'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.7/src/single-thread/wllama.wasm',
+      wllamaWasmMT:   'https://cdn.jsdelivr.net/npm/@wllama/wllama@2.3.7/src/multi-thread/wllama.wasm',
+    };
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: { fontFamily: { mono: ['"IBM Plex Mono"', 'Consolas', 'monospace'], sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'] } } }
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    [x-cloak] { display: none !important; }
+    .log-scroll { scrollbar-width: thin; scrollbar-color: #334155 transparent; }
+    .log-scroll::-webkit-scrollbar { width: 5px; }
+    .log-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    @keyframes pulse-bar { 0%,100% { opacity:1 } 50% { opacity:.5 } }
+    .bar-pulse { animation: pulse-bar 1.5s ease-in-out infinite; }
+    .chat-bubble { word-break: break-word; white-space: pre-wrap; }
+    /* Type badges — plain CSS (no @apply for CDN Tailwind) */
+    .badge { font-size:9px; font-weight:500; text-transform:uppercase; letter-spacing:0.05em; padding:2px 6px; border-radius:4px; display:inline-block; }
+    .badge-embedding   { background:rgb(76 29 149/.5); color:#c4b5fd; border:1px solid rgb(109 40 217/.4); }
+    .badge-reranker    { background:rgb(22 78 99/.5);   color:#67e8f9; border:1px solid rgb(14 116 144/.4); }
+    .badge-classifier  { background:rgb(120 53 15/.5);  color:#fcd34d; border:1px solid rgb(180 83 9/.4); }
+    .badge-ner         { background:rgb(136 19 55/.5);  color:#fda4af; border:1px solid rgb(190 18 60/.4); }
+    .badge-qa          { background:rgb(63 98 18/.5);   color:#bef264; border:1px solid rgb(77 124 15/.4); }
+    .badge-llm         { background:rgb(124 45 18/.5);  color:#fdba74; border:1px solid rgb(194 65 12/.4); }
+    .badge-mmproj      { background:rgb(131 24 67/.5);  color:#f9a8d4; border:1px solid rgb(190 24 93/.4); }
+    .badge-unknown     { background:#1e293b; color:#94a3b8; border:1px solid #334155; }
+    .badge-loaded      { background:rgb(6 78 59/.5); color:#34d399; border:1px solid rgb(4 120 87/.4); }
+    /* Image bank */
+    .img-thumb { width:56px; height:56px; object-fit:cover; border-radius:4px; border:2px solid #334155; cursor:pointer; transition:all .15s; }
+    .img-thumb:hover { border-color:#64748b; }
+    .img-thumb.pending { border-style:dashed; border-color:rgb(37 99 235/.6); }
+    .img-thumb.sent { border-style:solid; border-color:rgb(5 150 105/.6); opacity:.8; }
+    /* NER highlight spans */
+    .ner-entity { padding:2px 4px; border-radius:4px; font-size:12px; font-weight:500; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-200 font-mono min-h-screen">
+
+<div class="max-w-5xl mx-auto p-4 sm:p-6" x-data="harness()" x-init="init()" x-cloak>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- HEADER                                                                 -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="mb-5">
+    <h1 class="text-lg font-semibold text-white font-sans flex items-center gap-2">
+      <span class="text-emerald-400 text-xl">&#9674;</span>
+      WebModelDelivery
+      <span class="text-slate-500 font-normal">— Unified Harness</span>
+    </h1>
+    <p class="text-[11px] text-slate-500 mt-1 font-sans">
+      Add model sources &rarr; select manifest &rarr; load &rarr; run inference
+      &middot; <span x-text="swStatus" class="text-slate-400"></span>
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- MODEL SOURCES                                                          -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="bg-slate-900/80 border border-slate-800 rounded-lg p-4 mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xs font-semibold text-slate-300 uppercase tracking-wider font-sans">Model Sources</h2>
+      <div class="flex gap-2 items-center">
+        <button @click="clearCache()" class="text-[10px] bg-amber-900/40 hover:bg-amber-900/60 text-amber-400 px-2 py-0.5 rounded border border-amber-800/30 transition-colors">Clear SW Cache</button>
+      </div>
+    </div>
+
+    <!-- Add source row -->
+    <div class="flex gap-2 mb-3">
+      <input type="text" x-model="newSourceUrl"
+        @keydown.enter="addSource()"
+        class="flex-1 text-xs bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-300 placeholder-slate-600 focus:border-emerald-600 focus:outline-none transition-colors"
+        placeholder="https://cdn.jsdelivr.net/gh/user/repo@tag  or  http://localhost:8080/pkg-model" />
+      <button @click="addSource()" :disabled="!newSourceUrl.trim()"
+        class="text-xs bg-emerald-700 hover:bg-emerald-600 disabled:opacity-30 text-white px-4 py-1.5 rounded font-sans font-medium transition-colors">
+        Add Source
+      </button>
+    </div>
+
+    <!-- Source cards -->
+    <div class="space-y-2">
+      <template x-for="(src, idx) in sources" :key="src.id">
+        <div class="bg-slate-950/80 border rounded-lg p-3 transition-colors"
+             :class="src.ready ? 'border-emerald-800/50' : src.error ? 'border-red-800/40' : 'border-slate-800'">
+
+          <!-- Top row: URL + type badge + controls -->
+          <div class="flex items-center gap-2 flex-wrap mb-2">
+            <span class="text-[10px] text-slate-600 font-mono shrink-0">S<span x-text="idx"></span></span>
+            <span class="text-[11px] text-slate-400 truncate flex-1 min-w-0" x-text="src.url"></span>
+
+            <!-- Type badge -->
+            <span x-show="src.detectedType" class="badge"
+                  :class="typeBadgeClass(src.detectedType)" x-text="src.detectedType"></span>
+            <span x-show="src.ready" class="badge bg-emerald-900/50 text-emerald-400 border border-emerald-700/40">LOADED</span>
+
+            <!-- Manifest dropdown -->
+            <select x-model="src.selectedManifest"
+                    :disabled="src.loading || !src.manifestOpts.length"
+                    class="text-[11px] bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-300 max-w-[180px]">
+              <template x-for="opt in src.manifestOpts" :key="opt.value">
+                <option :value="opt.value" x-text="opt.label"></option>
+              </template>
+            </select>
+
+            <!-- Load / Unload / Remove -->
+            <button @click="loadSource(idx)" :disabled="src.loading || !src.selectedManifest"
+                    x-show="!src.ready"
+                    class="text-[11px] bg-blue-700 hover:bg-blue-600 disabled:opacity-30 text-white px-3 py-1 rounded transition-colors">
+              <span x-show="!src.loading">Load</span><span x-show="src.loading">Loading&hellip;</span>
+            </button>
+            <button @click="unloadSource(idx)" x-show="src.ready"
+                    class="text-[11px] bg-slate-700 hover:bg-slate-600 text-white px-3 py-1 rounded transition-colors">Unload</button>
+            <button @click="removeSource(idx)" x-show="!src.loading && !src.ready"
+                    class="text-[11px] text-slate-600 hover:text-red-400 px-1 transition-colors">&times;</button>
+          </div>
+
+          <!-- Error -->
+          <div x-show="src.error" class="text-[10px] text-red-400 mb-2" x-text="src.error"></div>
+
+          <!-- Progress bars (shown while loading or after ready) -->
+          <div x-show="src.loading || src.ready" class="grid grid-cols-2 gap-2">
+            <div class="bg-slate-900 rounded p-1.5">
+              <div class="text-[9px] text-slate-600 uppercase tracking-wide mb-1">Service Worker</div>
+              <div class="h-1 bg-slate-800 rounded overflow-hidden">
+                <div class="h-full bg-blue-500 rounded transition-all duration-300"
+                     :class="src.loading && !src.sw.done ? 'bar-pulse' : ''"
+                     :style="`width:${src.sw.percent}%`"></div>
+              </div>
+              <div class="text-[9px] text-slate-600 mt-0.5">
+                <span x-text="src.sw.percent+'%'"></span> &middot;
+                <span x-text="fmtB(src.sw.loaded)"></span>/<span x-text="fmtB(src.sw.total)"></span>
+              </div>
+            </div>
+            <div class="bg-slate-900 rounded p-1.5">
+              <div class="text-[9px] text-slate-600 uppercase tracking-wide mb-1">Runtime</div>
+              <div class="h-1 bg-slate-800 rounded overflow-hidden">
+                <div class="h-full rounded transition-all duration-300"
+                     :class="src.detectedType === 'llm' ? 'bg-orange-500' : 'bg-emerald-500'"
+                     :style="`width:${src.rt.percent}%`"></div>
+              </div>
+              <div class="text-[9px] text-slate-600 mt-0.5" x-text="src.rt.status"></div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <div x-show="!sources.length" class="text-center py-6 text-slate-700 text-xs">
+        Add a filemap URL above to get started
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- INFERENCE PANELS — dynamically shown based on loaded model types       -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- ─── EMBEDDING ──────────────────────────────────────────────────────── -->
+  <template x-for="src in readySources('embedding')" :key="'emb-'+src.id">
+    <div class="bg-slate-900/80 border border-violet-800/30 rounded-lg p-4 mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="badge badge-embedding">Embedding</span>
+        <span class="text-xs text-slate-400 font-sans" x-text="sourceLabel(src)"></span>
+      </div>
+      <div class="text-xs text-slate-400 mb-2 font-sans">Cosine Similarity</div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <textarea x-model="emb.textA" class="text-xs bg-slate-950 border border-slate-800 rounded p-2 h-16 text-slate-300 resize-none focus:border-violet-600 focus:outline-none" placeholder="Sentence A"></textarea>
+        <textarea x-model="emb.textB" class="text-xs bg-slate-950 border border-slate-800 rounded p-2 h-16 text-slate-300 resize-none focus:border-violet-600 focus:outline-none" placeholder="Sentence B"></textarea>
+      </div>
+      <div class="flex items-center gap-3">
+        <button @click="runEmbedding(src)" :disabled="emb.running" class="text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors">Compute</button>
+        <span x-show="emb.result !== null" class="text-xs">
+          Similarity: <span class="text-white font-semibold" x-text="emb.result?.toFixed(4)"></span>
+          <span class="text-slate-600" x-text="emb.time"></span>
+        </span>
+      </div>
+    </div>
+  </template>
+
+  <!-- ─── RERANKER ───────────────────────────────────────────────────────── -->
+  <template x-for="src in readySources('reranker')" :key="'rr-'+src.id">
+    <div class="bg-slate-900/80 border border-cyan-800/30 rounded-lg p-4 mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="badge badge-reranker">Reranker</span>
+        <span class="text-xs text-slate-400 font-sans" x-text="sourceLabel(src)"></span>
+      </div>
+      <div class="text-xs text-slate-400 mb-2 font-sans">Query&ndash;Document Ranking</div>
+      <input x-model="rr.query" class="text-xs bg-slate-950 border border-slate-800 rounded px-2 py-1.5 w-full mb-2 text-slate-300 focus:border-cyan-600 focus:outline-none" placeholder="Query..." />
+      <textarea x-model="rr.docs" class="text-xs bg-slate-950 border border-slate-800 rounded p-2 w-full h-20 text-slate-300 resize-none mb-2 focus:border-cyan-600 focus:outline-none"
+        placeholder="One document per line..."></textarea>
+      <button @click="runReranker(src)" :disabled="rr.running" class="text-xs bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors">Rank</button>
+      <div x-show="rr.results.length" class="mt-2 space-y-1">
+        <template x-for="(r, i) in rr.results" :key="i">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="text-slate-600 w-5 text-right" x-text="'#'+(i+1)"></span>
+            <span class="w-16 text-right font-semibold" :class="r.score > 0 ? 'text-cyan-400' : 'text-slate-500'" x-text="(r.score >= 0 ? '+' : '') + r.score.toFixed(3)"></span>
+            <span class="text-slate-400 truncate" x-text="r.doc"></span>
+          </div>
+        </template>
+        <div class="text-[10px] text-slate-600 mt-1" x-text="rr.time"></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ─── TEXT CLASSIFICATION ────────────────────────────────────────────── -->
+  <template x-for="src in readySources('text-classification')" :key="'cls-'+src.id">
+    <div class="bg-slate-900/80 border border-amber-800/30 rounded-lg p-4 mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="badge badge-classifier">Classifier</span>
+        <span class="text-xs text-slate-400 font-sans" x-text="sourceLabel(src)"></span>
+      </div>
+      <textarea x-model="cls.text" class="text-xs bg-slate-950 border border-slate-800 rounded p-2 w-full h-16 text-slate-300 resize-none mb-2 focus:border-amber-600 focus:outline-none"
+        placeholder="Text to classify..."></textarea>
+      <button @click="runClassifier(src)" :disabled="cls.running" class="text-xs bg-amber-700 hover:bg-amber-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors">Classify</button>
+      <div x-show="cls.results.length" class="mt-3 space-y-1.5">
+        <template x-for="(r, i) in cls.results" :key="i">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="w-24 text-right text-slate-400 truncate" x-text="r.label"></span>
+            <div class="flex-1 h-4 bg-slate-800 rounded overflow-hidden">
+              <div class="h-full bg-amber-600/70 rounded transition-all" :style="`width:${(r.score*100).toFixed(1)}%`"></div>
+            </div>
+            <span class="w-14 text-right font-semibold text-amber-400" x-text="(r.score*100).toFixed(1)+'%'"></span>
+          </div>
+        </template>
+        <div class="text-[10px] text-slate-600 mt-1" x-text="cls.time"></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ─── TOKEN CLASSIFICATION (NER) ────────────────────────────────────── -->
+  <template x-for="src in readySources('token-classification')" :key="'ner-'+src.id">
+    <div class="bg-slate-900/80 border border-rose-800/30 rounded-lg p-4 mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="badge badge-ner">NER</span>
+        <span class="text-xs text-slate-400 font-sans" x-text="sourceLabel(src)"></span>
+      </div>
+      <textarea x-model="ner.text" class="text-xs bg-slate-950 border border-slate-800 rounded p-2 w-full h-16 text-slate-300 resize-none mb-2 focus:border-rose-600 focus:outline-none"
+        placeholder="Text for entity recognition..."></textarea>
+      <button @click="runNER(src)" :disabled="ner.running" class="text-xs bg-rose-700 hover:bg-rose-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors">Extract Entities</button>
+      <div x-show="ner.html" class="mt-3 bg-slate-950 rounded p-3 text-sm leading-relaxed" x-html="ner.html"></div>
+      <div x-show="ner.entities.length" class="mt-2 flex flex-wrap gap-1">
+        <template x-for="(e, i) in ner.entities" :key="i">
+          <span class="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">
+            <span class="text-rose-400" x-text="e.entity"></span>: <span x-text="e.word"></span>
+          </span>
+        </template>
+      </div>
+      <div x-show="ner.time" class="text-[10px] text-slate-600 mt-1" x-text="ner.time"></div>
+    </div>
+  </template>
+
+  <!-- ─── QUESTION ANSWERING ─────────────────────────────────────────────── -->
+  <template x-for="src in readySources('question-answering')" :key="'qa-'+src.id">
+    <div class="bg-slate-900/80 border border-lime-800/30 rounded-lg p-4 mb-4">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="badge badge-qa">QA</span>
+        <span class="text-xs text-slate-400 font-sans" x-text="sourceLabel(src)"></span>
+      </div>
+      <textarea x-model="qa.context" class="text-xs bg-slate-950 border border-slate-800 rounded p-2 w-full h-20 text-slate-300 resize-none mb-2 focus:border-lime-600 focus:outline-none"
+        placeholder="Context paragraph..."></textarea>
+      <input x-model="qa.question" class="text-xs bg-slate-950 border border-slate-800 rounded px-2 py-1.5 w-full mb-2 text-slate-300 focus:border-lime-600 focus:outline-none" placeholder="Question..." />
+      <button @click="runQA(src)" :disabled="qa.running" class="text-xs bg-lime-700 hover:bg-lime-600 disabled:opacity-40 text-white px-3 py-1 rounded transition-colors">Answer</button>
+      <div x-show="qa.answer" class="mt-3">
+        <div class="text-xs text-slate-400 mb-1 font-sans">Answer:</div>
+        <div class="text-sm text-lime-300 bg-slate-950 rounded px-3 py-2 font-semibold" x-text="qa.answer"></div>
+        <div class="text-[10px] text-slate-600 mt-1">
+          Score: <span x-text="qa.score?.toFixed(4)"></span> &middot; <span x-text="qa.time"></span>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- ─── LLM CHAT ───────────────────────────────────────────────────────── -->
+  <template x-for="src in readySources('llm')" :key="'llm-'+src.id">
+    <div class="bg-slate-900/80 border border-orange-800/30 rounded-lg p-4 mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="badge badge-llm">LLM</span>
+          <span class="text-xs text-slate-400 font-sans" x-text="sourceLabel(src)"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-[10px] text-slate-600">Max tokens</label>
+          <input type="number" x-model.number="llm.maxTokens" class="text-[11px] bg-slate-950 border border-slate-800 rounded px-2 py-0.5 w-16 text-slate-300" min="1" max="4096" />
+          <button @click="llm.messages=[]; llm.streamText=''" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-400 px-2 py-0.5 rounded transition-colors">Clear</button>
+        </div>
+      </div>
+
+      <!-- Image bank (multimodal) -->
+      <div x-show="src.hasMMProj" class="mb-3 border border-dashed border-slate-700 rounded-lg p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-[10px] text-slate-500 uppercase tracking-wide font-sans">Image Bank</span>
+          <label class="text-[10px] bg-pink-800/40 hover:bg-pink-800/60 text-pink-300 px-2 py-0.5 rounded cursor-pointer border border-pink-700/30 transition-colors">
+            + Add Image
+            <input type="file" accept="image/*" multiple @change="addImages($event)" class="hidden" />
+          </label>
+        </div>
+        <div class="flex flex-wrap gap-2 min-h-[20px]">
+          <template x-for="(img, i) in llm.pendingImages" :key="img.id">
+            <div class="relative group">
+              <img :src="img.dataUrl" class="img-thumb pending" :title="img.name" />
+              <button @click="removePendingImage(i)"
+                class="absolute -top-1 -right-1 w-4 h-4 bg-red-600 text-white text-[9px] rounded-full leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">&times;</button>
+            </div>
+          </template>
+          <div x-show="!llm.pendingImages.length" class="text-[10px] text-slate-700 italic py-2">Drop or add images to attach to next message</div>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div class="bg-slate-950 rounded p-3 max-h-80 overflow-y-auto log-scroll mb-3 space-y-2" :data-chatbox="src.id">
+        <template x-for="(msg, i) in llm.messages" :key="i">
+          <div class="flex gap-2" :class="msg.role === 'user' ? 'justify-end' : ''">
+            <div class="max-w-[80%]">
+              <!-- Attached images -->
+              <div x-show="msg.images && msg.images.length" class="flex flex-wrap gap-1 mb-1" :class="msg.role === 'user' ? 'justify-end' : ''">
+                <template x-for="(img, j) in (msg.images || [])" :key="j">
+                  <img :src="img.dataUrl" class="img-thumb sent" :title="img.name" />
+                </template>
+              </div>
+              <div class="chat-bubble text-xs px-3 py-2 rounded-lg"
+                   :class="msg.role === 'user'
+                     ? 'bg-blue-900/40 text-blue-200 rounded-br-sm'
+                     : 'bg-slate-800 text-slate-300 rounded-bl-sm'"
+                   x-text="msg.content"></div>
+            </div>
+          </div>
+        </template>
+        <div x-show="llm.generating" class="flex gap-2">
+          <div class="chat-bubble text-xs px-3 py-2 rounded-lg rounded-bl-sm bg-slate-800 text-slate-300 max-w-[80%]">
+            <span x-text="llm.streamText || '…'"></span>
+            <span class="inline-block w-1 h-3 bg-orange-400 ml-0.5 animate-pulse"></span>
+          </div>
+        </div>
+        <div x-show="!llm.messages.length && !llm.generating" class="text-slate-700 text-xs italic">Send a message to start chatting...</div>
+      </div>
+
+      <!-- Input -->
+      <div class="flex gap-2">
+        <input type="text" x-model="llm.userInput" @keydown.enter="sendChat(src)"
+               :disabled="llm.generating"
+               class="flex-1 text-xs bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-300 placeholder-slate-600 focus:border-orange-600 focus:outline-none"
+               placeholder="Type a message..." />
+        <button @click="sendChat(src)" :disabled="llm.generating || !llm.userInput.trim()"
+                class="text-xs bg-orange-700 hover:bg-orange-600 disabled:opacity-40 text-white px-4 py-2 rounded transition-colors">
+          <span x-show="!llm.generating">Send</span><span x-show="llm.generating">Gen&hellip;</span>
+        </button>
+        <button x-show="llm.generating" @click="stopChat(src)" class="text-xs bg-red-700 hover:bg-red-600 text-white px-3 py-2 rounded transition-colors">Stop</button>
+      </div>
+      <div x-show="llm.genStats" class="text-[10px] text-slate-600 mt-1" x-text="llm.genStats"></div>
+    </div>
+  </template>
+
+  <!-- No models loaded hint -->
+  <div x-show="!sources.some(s => s.ready)" class="text-center py-8 text-slate-700 text-xs">
+    <span x-show="sources.length">Load a model source above to see inference panels</span>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- LOG                                                                    -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="bg-slate-900/80 border border-slate-800 rounded-lg p-4">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-[10px] font-semibold text-slate-500 uppercase tracking-wider font-sans">Log</h2>
+      <button @click="log=[]" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-500 px-2 py-0.5 rounded transition-colors">Clear</button>
+    </div>
+    <div class="bg-slate-950 rounded p-2 max-h-48 overflow-y-auto log-scroll text-[10px] leading-relaxed space-y-0.5" x-ref="logBox">
+      <template x-for="(entry, i) in log" :key="i">
+        <div :class="{ 'text-slate-500': entry.t==='sys', 'text-blue-400/80': entry.t==='sw', 'text-emerald-400/80': entry.t==='rt', 'text-red-400': entry.t==='err' }">
+          <span class="text-slate-700" x-text="entry.ts"></span> <span x-text="entry.m"></span>
+        </div>
+      </template>
+      <div x-show="!log.length" class="text-slate-700 italic">Waiting for events...</div>
+    </div>
+  </div>
+
+  <p class="text-[10px] text-slate-700 mt-3 text-center font-sans">
+    Serve with <code class="text-slate-600">python3 cors_server.py</code> or <code class="text-slate-600">node serve.mjs</code>
+    &middot; model-sw.js wraps cross-origin CDN responses for COEP compatibility
+  </p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<!-- SCRIPT                                                                     -->
+<!-- ═══════════════════════════════════════════════════════════════════════════ -->
+<script>
+
+// ── Lazy library loading ───────────────────────────────────────────────────
+let TF, AutoModel, AutoTokenizer, AutoModelForSequenceClassification,
+    AutoModelForTokenClassification, AutoModelForQuestionAnswering;
+let tfLoaded = false;
+async function ensureTransformersJS() {
+  if (tfLoaded) return;
+  TF = await import(DEPS.transformersJs);
+  AutoModel = TF.AutoModel;
+  AutoTokenizer = TF.AutoTokenizer;
+  AutoModelForSequenceClassification = TF.AutoModelForSequenceClassification;
+  AutoModelForTokenClassification = TF.AutoModelForTokenClassification;
+  AutoModelForQuestionAnswering = TF.AutoModelForQuestionAnswering;
+  TF.env.allowRemoteModels = false;
+  TF.env.allowLocalModels = true;
+  tfLoaded = true;
+}
+
+let Wllama, wlLoaded = false;
+async function ensureWllama() {
+  if (wlLoaded) return;
+  // Fetch + patch wllama to fix signed-pointer overflow when WASM heap > 2GB.
+  // wllama's worker code treats WASM pointers as signed i32.  When the heap
+  // exceeds 2^31 bytes, pointers wrap negative → crashes Uint8Array.
+  // Fix: coerce to unsigned via >>> 0.
+  const resp = await fetch(DEPS.wllamaJs);
+  let src = await resp.text();
+  src = src.replace(
+    'const ptr = m.mmapAlloc(size);',
+    'const ptr = (m.mmapAlloc(size)) >>> 0;'
+  );
+  src = src.replace(
+    'const inputPtr = await wllamaMalloc(argEncodedMsg.byteLength, 0);',
+    'const inputPtr = (await wllamaMalloc(argEncodedMsg.byteLength, 0)) >>> 0;'
+  );
+  src = src.replace(
+    'const outputPtr = await wllamaAction(argAction, inputPtr);',
+    'const outputPtr = (await wllamaAction(argAction, inputPtr)) >>> 0;'
+  );
+  const blob = new Blob([src], { type: 'text/javascript' });
+  const url = URL.createObjectURL(blob);
+  const mod = await import(url);
+  URL.revokeObjectURL(url);
+  Wllama = mod.Wllama;
+  wlLoaded = true;
+}
+
+// ── Type detection from filemap metadata ───────────────────────────────────
+function detectType(filemap) {
+  // 1. Check onnx_metadata
+  const om = filemap.onnx_metadata;
+  if (om?.classification) {
+    const c = om.classification;
+    if (c === 'embedding' || c === 'feature-extraction') return 'embedding';
+    if (c === 'reranker') return 'reranker';
+    if (c === 'text-classification' || c === 'zero-shot-classification') return 'text-classification';
+    if (c === 'token-classification') return 'token-classification';
+    if (c === 'question-answering') return 'question-answering';
+    if (c === 'text-generation') return 'llm';
+    return c; // pass through
+  }
+
+  // 2. Check gguf_metadata
+  const gm = filemap.gguf_metadata;
+  if (gm) {
+    const entries = Object.values(gm);
+    const hasLLM = entries.some(e => e.classification === 'llm');
+    const hasMM = entries.some(e => e.classification === 'mmproj');
+    if (hasLLM) return 'llm';  // LLM primary, even if mmproj also present
+    if (hasMM) return 'mmproj';
+    if (entries.length) return 'llm'; // default for GGUF
+  }
+
+  // 3. File extension heuristics
+  const fileKeys = Object.keys(filemap.files || {});
+  if (fileKeys.some(f => f.endsWith('.gguf'))) return 'llm';
+  if (fileKeys.some(f => f.endsWith('.onnx'))) return 'unknown-onnx';
+  return 'unknown';
+}
+
+function autoModelClass(filemap) {
+  return filemap.onnx_metadata?.auto_model_class || 'AutoModel';
+}
+
+// Runtime fallback: classify from config.json when filemap lacks onnx_metadata
+const ARCH_SUFFIX_MAP = {
+  ForCausalLM: 'llm', LMHeadModel: 'llm',
+  ForSeq2SeqLM: 'llm', ForConditionalGeneration: 'llm',
+  ForSequenceClassification: '_seq_cls',
+  ForTokenClassification: 'token-classification',
+  ForQuestionAnswering: 'question-answering',
+  ForMaskedLM: 'fill-mask',
+  ForImageClassification: 'image-classification',
+};
+const RUNTIME_AUTOMODEL = {
+  embedding: 'AutoModel', reranker: 'AutoModelForSequenceClassification',
+  'text-classification': 'AutoModelForSequenceClassification',
+  'token-classification': 'AutoModelForTokenClassification',
+  'question-answering': 'AutoModelForQuestionAnswering',
+  llm: 'AutoModelForCausalLM',
+};
+function runtimeDetectFromConfig(cfg) {
+  const arch = (cfg.architectures || [])[0] || '';
+  for (const [suffix, type] of Object.entries(ARCH_SUFFIX_MAP)) {
+    if (arch.endsWith(suffix)) {
+      if (type === '_seq_cls') {
+        // Disambiguate: generic labels → reranker, meaningful → classifier
+        const labels = Object.values(cfg.id2label || {});
+        if (!labels.length || labels.every(l => /^LABEL[_-]?\d+$/i.test(l))) return 'reranker';
+        const nli = new Set(['entailment','contradiction','neutral']);
+        if (labels.some(l => nli.has(l.toLowerCase()))) return 'text-classification'; // zero-shot → treat as classifier
+        return 'text-classification';
+      }
+      return type;
+    }
+  }
+  // Base model heuristics
+  if (cfg.use_bidirectional_attention) return 'embedding';
+  return 'embedding'; // safe default for ONNX base models
+}
+
+// ── NER color palette for entity types ─────────────────────────────────────
+const NER_COLORS = {
+  PER: 'background:rgba(30,58,138,.5);color:#93c5fd', PERSON: 'background:rgba(30,58,138,.5);color:#93c5fd',
+  ORG: 'background:rgba(20,83,45,.5);color:#86efac', ORGANIZATION: 'background:rgba(20,83,45,.5);color:#86efac',
+  LOC: 'background:rgba(113,63,18,.5);color:#fde047', LOCATION: 'background:rgba(113,63,18,.5);color:#fde047',
+  MISC: 'background:rgba(88,28,135,.5);color:#d8b4fe',
+  DATE: 'background:rgba(22,78,99,.5);color:#67e8f9', TIME: 'background:rgba(22,78,99,.5);color:#67e8f9',
+};
+function nerStyle(entity) {
+  const e = entity.replace(/^[BI]-/, '').toUpperCase();
+  return NER_COLORS[e] || 'background:#334155;color:#cbd5e1';
+}
+
+// ── URL-derived path prefix ────────────────────────────────────────────────
+// Generate a stable, human-readable path prefix from a source URL.
+// Same URL always produces the same prefix → TF.js cache hits on reload.
+// Different URLs always produce different prefixes → no cache collisions.
+//
+//   "https://cdn.jsdelivr.net/gh/kulogix/wmd_embeddinggemma@v1.0.0"
+//     → /models/wmd_embeddinggemma_v1.0.0_a3f2/
+//
+//   "http://localhost:8080/pkg-reranker"
+//     → /models/pkg-reranker_7b1c/
+//
+function urlToPrefix(url) {
+  // Extract last meaningful path segment
+  const parts = url.replace(/\/+$/, '').split('/').filter(Boolean);
+  let slug = parts[parts.length - 1] || 'model';
+  // Clean up: @ → _, remove protocol leftovers
+  slug = slug.replace(/@/g, '_').replace(/[^a-zA-Z0-9._-]/g, '_');
+  // Append 4-char hash of full URL for collision safety
+  const hash = simpleHash(url);
+  return `/models/${slug}_${hash}/`;
+}
+function simpleHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) { h = ((h << 5) - h + str.charCodeAt(i)) | 0; }
+  return (h >>> 0).toString(36).slice(0, 4).padStart(4, '0');
+}
+
+// ── Unique ID counter (for non-URL purposes) ──────────────────────────────
+let _nextId = 0;
+function nextId() { return _nextId++; }
+
+// ── Model instance store (outside Alpine to avoid Proxy wrapping) ────────────
+// Alpine deeply wraps x-data objects in reactive Proxies. Wllama and TF.js
+// model instances stored inside x-data become Proxy-wrapped. When wllama's
+// postMessage tries to clone internal state → DataCloneError. Keeping instances
+// in a plain Map avoids this entirely.
+const _models = new Map();  // source.id → { model, tokenizer, wl, ggufName }
+function getM(src) { return _models.get(src.id) || {}; }
+function setM(src, obj) { _models.set(src.id, { ...getM(src), ...obj }); }
+function delM(src) { _models.delete(src.id); }
+
+// ── Wllama helpers (fully outside Alpine to prevent Proxy contamination) ─────
+// Even with _models Map, calling wllama methods from inside Alpine async methods
+// lets Alpine's Proxy leak through async continuations.  ALL wllama API calls
+// must happen in plain functions defined here, never inside Alpine methods.
+
+async function _wlCreate(modelUrl, onProgress) {
+  await ensureWllama();
+  const pathConfig = Object.create(null);
+  pathConfig['single-thread/wllama.wasm'] = DEPS.wllamaWasmST;
+  pathConfig['multi-thread/wllama.wasm'] = DEPS.wllamaWasmMT;
+  const wl = new Wllama(pathConfig);
+
+  const opts = Object.create(null);
+  opts.n_ctx = 2048;
+  opts.n_threads = navigator.hardwareConcurrency ? Math.min(navigator.hardwareConcurrency, 4) : 2;
+  opts.useCache = false;
+  if (onProgress) opts.progressCallback = onProgress;
+
+  await wl.loadModelFromUrl(modelUrl, opts);
+  return wl;
+}
+
+async function _wlRunChat(wl, messagesPlain, maxTokens, onToken) {
+  if (!wl) throw new Error('Model not loaded');
+  const msgs = JSON.parse(JSON.stringify(messagesPlain));
+  const opts = Object.create(null);
+  opts.nPredict = maxTokens;
+  const sampling = Object.create(null);
+  sampling.temp = 0.7; sampling.top_p = 0.9; sampling.top_k = 40;
+  opts.sampling = sampling;
+  if (onToken) opts.onNewToken = onToken;
+  return await wl.createChatCompletion(msgs, opts);
+}
+
+async function _wlExit(wl) {
+  if (wl) { try { await wl.exit(); } catch(_) {} }
+}
+
+function _wlStop(wl) {
+  if (wl && wl.abort) wl.abort();
+}
+
+// ── Alpine component ───────────────────────────────────────────────────────
+window.harness = () => ({
+  swStatus: 'initializing…',
+  log: [],
+  newSourceUrl: '',
+  sources: [],
+
+  // Inference state (shared across panels of same type — first loaded wins)
+  emb: { textA: 'The quick brown fox jumps over the lazy dog.', textB: 'A fast auburn fox leaps above a sleepy hound.', result: null, time: '', running: false },
+  rr:  { query: 'How do neural networks learn?', docs: 'Neural networks adjust weights through backpropagation.\nThe stock market experienced volatility.\nDeep learning uses gradient descent to minimize loss.\nPhotosynthesis converts sunlight into energy.\nTransformers use self-attention for sequence modeling.', results: [], time: '', running: false },
+  cls: { text: 'I absolutely loved this movie, the acting was phenomenal!', results: [], time: '', running: false },
+  ner: { text: 'John Smith works at Google in Mountain View, California since January 2020.', html: '', entities: [], time: '', running: false },
+  qa:  { context: 'The Amazon rainforest produces about 20% of the world\'s oxygen. It covers 5.5 million square kilometers across nine countries in South America.', question: 'How much oxygen does the Amazon produce?', answer: '', score: null, time: '', running: false },
+  llm: { messages: [], userInput: '', streamText: '', generating: false, genStats: '', maxTokens: 512, pendingImages: [] },
+
+  // ── Init ──────────────────────────────────────────────────────────────
+  async init() {
+    if (this._initDone) return;   // guard against Alpine re-firing
+    this._initDone = true;
+    if (!('serviceWorker' in navigator)) { this.L('err', 'Service Workers not supported'); return; }
+    this.L('sys', 'Registering Service Worker...');
+    await navigator.serviceWorker.register('/model-sw.js', { scope: '/' });
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      this.L('sys', 'SW installed — reloading to activate...');
+      location.reload(); return;
+    }
+
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      const d = e.data;
+      if (d?.type === 'MODEL_SW_PROGRESS') {
+        const src = this.sources.find(s => s.pathPrefix === d.pathPrefix);
+        if (src) src.sw = { percent: d.percent, loaded: d.modelLoaded, total: d.modelTotal, done: d.done };
+      }
+      if (d?.type === 'MODEL_SW_CACHE_CLEARED') this.L('sys', 'SW cache cleared.');
+    });
+
+    this.swStatus = 'SW active';
+    this.L('sys', 'Ready. Add a model source to begin.');
+  },
+
+  // ── Source management ─────────────────────────────────────────────────
+  async addSource() {
+    const url = this.newSourceUrl.trim().replace(/\/+$/, '');
+    if (!url) return;
+    if (this.sources.some(s => s.url === url)) { this.L('err', 'Source already added'); return; }
+
+    const id = nextId();
+    const pathPrefix = urlToPrefix(url);
+    // Check if this prefix is already in use (URL collision — extremely unlikely)
+    if (this.sources.some(s => s.pathPrefix === pathPrefix)) { this.L('err', 'Source URL collision'); return; }
+
+    const src = {
+      id, url,
+      pathPrefix,
+      filemap: null, manifestOpts: [], selectedManifest: '',
+      detectedType: null, detectedAutoModel: null,
+      loading: false, ready: false, error: null,
+      hasMMProj: false,
+      sw: { percent:0, loaded:0, total:0, done:false },
+      rt: { percent:0, status:'idle' },
+    };
+    this.sources.push(src);
+    this.newSourceUrl = '';
+    this.L('sys', `Added source S${this.sources.length-1}: ${url}`);
+
+    // Fetch filemap
+    try {
+      const r = await fetch(url + '/filemap.json');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      src.filemap = await r.json();
+      const names = Object.keys(src.filemap.manifests || {});
+      src.manifestOpts = names.map(n => {
+        const m = src.filemap.manifests[n];
+        const hint = m.onnx_stem ? m.onnx_stem : m.dtype ? m.dtype : '';
+        const tag = hint ? ` [${hint}]` : '';
+        return { value: n, label: `${n}${tag} (${this.fmtB(m.size)})` };
+      });
+      if (!src.manifestOpts.length) { src.manifestOpts = [{ value: '', label: 'no manifests' }]; }
+      src.selectedManifest = names[0] || '';
+      src.detectedType = detectType(src.filemap);
+      src.detectedAutoModel = autoModelClass(src.filemap);
+
+      // For repos lacking onnx_metadata, try runtime detection from config.json
+      if ((src.detectedType === 'unknown-onnx' || src.detectedType === 'unknown') && src.filemap.files?.['config.json']) {
+        try {
+          const cfgResp = await fetch(url + '/config.json');
+          if (cfgResp.ok) {
+            const cfg = await cfgResp.json();
+            src.detectedType = runtimeDetectFromConfig(cfg);
+            src.detectedAutoModel = RUNTIME_AUTOMODEL[src.detectedType] || 'AutoModel';
+            this.L('sys', `S${this.sources.indexOf(src)} runtime detected: ${src.detectedType}`);
+          }
+        } catch(_) {}
+      }
+
+      // Check for mmproj in GGUF manifests
+      if (names.some(n => n.includes('+mmproj'))) src.hasMMProj = true;
+
+      this.L('sys', `S${this.sources.indexOf(src)} filemap: ${names.join(', ')} — type: ${src.detectedType}`);
+    } catch(e) {
+      src.error = `Failed to fetch filemap: ${e.message}`;
+      src.manifestOpts = [{ value: '', label: 'Error' }];
+      this.L('err', `S${this.sources.indexOf(src)} filemap: ${e.message}`);
+    }
+  },
+
+  removeSource(idx) {
+    this.sources.splice(idx, 1);
+    this.rebuildSWInit();
+  },
+
+  // ── SW config ─────────────────────────────────────────────────────────
+  rebuildSWInit() {
+    const swSources = this.sources.filter(s => s.filemap).map(s => ({
+      pathPrefix: s.pathPrefix,
+      cdnBase: s.url,
+      progress: true,
+      manifest: s.selectedManifest,
+    }));
+    navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_INIT', sources: swSources });
+  },
+
+  // ── Load / Unload ─────────────────────────────────────────────────────
+  async loadSource(idx) {
+    const src = this.sources[idx];
+    if (!src || src.loading) return;
+    src.loading = true; src.error = null;
+    src.sw = { percent:0, loaded:0, total:0, done:false };
+    src.rt = { percent:0, status:'starting…' };
+    this.rebuildSWInit();
+    const t0 = performance.now();
+
+    try {
+      const type = src.detectedType;
+      if (type === 'llm' || type === 'mmproj') {
+        await this._loadGGUF(src);
+      } else {
+        await this._loadONNX(src);
+      }
+      const ms = (performance.now() - t0) | 0;
+      src.ready = true;
+      src.rt = { percent: 100, status: `ready ✓ ${ms}ms` };
+      navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_COMPLETE', pathPrefix: src.pathPrefix });
+      this.L('sys', `S${idx} loaded in ${(ms/1000).toFixed(1)}s [${type}]`);
+    } catch(e) {
+      src.error = e.message;
+      src.rt = { percent: 0, status: 'error' };
+      this.L('err', `S${idx} load: ${e.message}`);
+    }
+    src.loading = false;
+  },
+
+  async _loadONNX(src) {
+    this.L('sys', 'Loading Transformers.js...');
+    await ensureTransformersJS();
+    const pp = src.pathPrefix;
+    const modelOpts = this._getModelOpts(src);
+    const cb = (info) => {
+      const f = (info.file || '').split('/').pop();
+      if (info.status === 'progress') src.rt = { percent: Math.round(info.progress || 0), status: `${f} ${Math.round(info.progress||0)}%` };
+      else if (info.status === 'done') src.rt = { ...src.rt, status: `${f} ✓` };
+      else if (info.status === 'ready') src.rt = { percent: 100, status: 'ready' };
+    };
+
+    const tokenizer = await AutoTokenizer.from_pretrained(pp, { progress_callback: cb });
+
+    const type = src.detectedType;
+    const amc = src.detectedAutoModel;
+    let model;
+    if (amc === 'AutoModelForSequenceClassification' || type === 'reranker' || type === 'text-classification') {
+      model = await AutoModelForSequenceClassification.from_pretrained(pp, { ...modelOpts, progress_callback: cb });
+    } else if (amc === 'AutoModelForTokenClassification' || type === 'token-classification') {
+      model = await AutoModelForTokenClassification.from_pretrained(pp, { ...modelOpts, progress_callback: cb });
+    } else if (amc === 'AutoModelForQuestionAnswering' || type === 'question-answering') {
+      model = await AutoModelForQuestionAnswering.from_pretrained(pp, { ...modelOpts, progress_callback: cb });
+    } else {
+      model = await AutoModel.from_pretrained(pp, { ...modelOpts, progress_callback: cb });
+    }
+    setM(src, { model, tokenizer });
+  },
+
+  // Read ONNX loading options from filemap manifest metadata.
+  // Packager stores onnx_stem (exact filename stem like "model_qint8_arm64")
+  // which we pass to TF.js as model_file_name — no dtype guessing needed.
+  _getModelOpts(src) {
+    const m = src.filemap?.manifests?.[src.selectedManifest];
+    if (m?.onnx_stem) {
+      return { model_file_name: m.onnx_stem };
+    }
+    // Legacy fallback
+    const name = src.selectedManifest;
+    const VALID = new Set(['fp32','fp16','q8','int8','uint8','q4','bnb4','q4f16']);
+    if (!name || name === 'default') return { dtype: 'fp32' };
+    if (VALID.has(name)) return { dtype: name };
+    if (name === 'quantized') return { dtype: 'q8' };
+    return {};
+  },
+
+  async _loadGGUF(src) {
+    this.L('sys', 'Loading wllama...');
+    const manifest = src.filemap?.manifests?.[src.selectedManifest];
+    const ggufFiles = (manifest?.files || Object.keys(src.filemap?.files || {}))
+      .filter(f => f.endsWith('.gguf') && !f.toLowerCase().includes('mmproj'));
+    const ggufName = ggufFiles[0] || '';
+    if (!ggufName) throw new Error('No GGUF file found in manifest');
+    const modelUrl = `${location.origin}${src.pathPrefix}${ggufName}`;
+    this.L('sys', `Loading ${ggufName} via SW...`);
+    const self = this;
+    const progressCb = function({ loaded, total }) {
+      const pct = total > 0 ? Math.round(loaded / total * 100) : 0;
+      src.rt = { percent: pct, status: `${pct}% (${self.fmtB(loaded)}/${self.fmtB(total)})` };
+    };
+    // _wlCreate runs entirely outside Alpine's scope
+    const wl = await _wlCreate(modelUrl, progressCb);
+    setM(src, { wl, ggufName });
+  },
+
+  async unloadSource(idx) {
+    const src = this.sources[idx];
+    if (!src) return;
+    const m = getM(src);
+    if (m.model?.dispose) m.model.dispose();
+    if (m.wl) { await _wlExit(m.wl); }
+    delM(src);
+    src.ready = false;
+    src.sw = { percent:0, loaded:0, total:0, done:false };
+    src.rt = { percent:0, status:'idle' };
+    this.L('sys', `S${idx} unloaded.`);
+  },
+
+  // ── Inference: Embedding ──────────────────────────────────────────────
+  async runEmbedding(src) {
+    if (!getM(src).model || !getM(src).tokenizer || this.emb.running) return;
+    this.emb.running = true;
+    const t0 = performance.now();
+    try {
+      const encA = await getM(src).tokenizer(this.emb.textA, { padding: true, truncation: true });
+      const encB = await getM(src).tokenizer(this.emb.textB, { padding: true, truncation: true });
+      const outA = await getM(src).model(encA);
+      const outB = await getM(src).model(encB);
+      const a = this._poolEmbedding(outA, encA);
+      const b = this._poolEmbedding(outB, encB);
+      let dot=0, na=0, nb=0;
+      for (let i = 0; i < a.length; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
+      this.emb.result = dot / (Math.sqrt(na) * Math.sqrt(nb));
+      this.emb.time = `(${(performance.now()-t0)|0}ms, ${a.length}d)`;
+    } catch(e) { this.L('err', 'Embedding: ' + e.message); }
+    this.emb.running = false;
+  },
+
+  // Mean-pool over sequence dimension if needed
+  _poolEmbedding(output, encoded) {
+    // If model provides sentence_embedding, use directly
+    if (output.sentence_embedding?.data) return output.sentence_embedding.data;
+    // Otherwise mean-pool last_hidden_state [batch, seq, hidden]
+    const lhs = output.last_hidden_state;
+    if (!lhs) return new Float32Array(0);
+    const dims = lhs.dims; // [1, seq_len, hidden_size]
+    if (dims.length !== 3) return lhs.data; // fallback
+    const [, seqLen, hidden] = dims;
+    const data = lhs.data;
+    const mask = encoded.attention_mask?.data;
+    const pooled = new Float32Array(hidden);
+    let maskSum = 0;
+    for (let t = 0; t < seqLen; t++) {
+      const w = mask ? mask[t] : 1;
+      if (w === 0) continue;
+      maskSum += w;
+      for (let h = 0; h < hidden; h++) pooled[h] += data[t * hidden + h] * w;
+    }
+    if (maskSum > 0) for (let h = 0; h < hidden; h++) pooled[h] /= maskSum;
+    return pooled;
+  },
+
+  // ── Inference: Reranker ───────────────────────────────────────────────
+  async runReranker(src) {
+    if (!getM(src).model || !getM(src).tokenizer || this.rr.running) return;
+    this.rr.running = true;
+    const docs = this.rr.docs.split('\n').map(s => s.trim()).filter(Boolean);
+    const t0 = performance.now();
+    try {
+      const results = [];
+      for (const doc of docs) {
+        const enc = await getM(src).tokenizer(this.rr.query, { text_pair: doc, padding: true, truncation: true });
+        const out = await getM(src).model(enc);
+        results.push({ doc, score: out.logits.data[0] });
+      }
+      results.sort((a,b) => b.score - a.score);
+      this.rr.results = results;
+      this.rr.time = `Ranked ${docs.length} docs in ${(performance.now()-t0)|0}ms`;
+    } catch(e) { this.L('err', 'Reranker: ' + e.message); }
+    this.rr.running = false;
+  },
+
+  // ── Inference: Text Classification ────────────────────────────────────
+  async runClassifier(src) {
+    if (!getM(src).model || !getM(src).tokenizer || this.cls.running) return;
+    this.cls.running = true;
+    const t0 = performance.now();
+    try {
+      const enc = await getM(src).tokenizer(this.cls.text, { padding: true, truncation: true });
+      const out = await getM(src).model(enc);
+      const logits = out.logits.data;
+      // Softmax
+      const maxL = Math.max(...logits);
+      const exps = Array.from(logits).map(l => Math.exp(l - maxL));
+      const sumExp = exps.reduce((a,b) => a+b, 0);
+      const probs = exps.map(e => e / sumExp);
+      // Map to labels
+      const labels = src.filemap?.onnx_metadata?.labels || probs.map((_, i) => `Label ${i}`);
+      const results = probs.map((score, i) => ({ label: labels[i] || `Label ${i}`, score }));
+      results.sort((a,b) => b.score - a.score);
+      this.cls.results = results;
+      this.cls.time = `${(performance.now()-t0)|0}ms`;
+    } catch(e) { this.L('err', 'Classifier: ' + e.message); }
+    this.cls.running = false;
+  },
+
+  // ── Inference: NER ────────────────────────────────────────────────────
+  async runNER(src) {
+    if (!getM(src).model || !getM(src).tokenizer || this.ner.running) return;
+    this.ner.running = true;
+    const t0 = performance.now();
+    try {
+      const enc = await getM(src).tokenizer(this.ner.text, { return_offsets_mapping: true, padding: true, truncation: true });
+      const out = await getM(src).model({ input_ids: enc.input_ids, attention_mask: enc.attention_mask });
+      const logits = out.logits;
+      const [batch, seqLen, numLabels] = logits.dims;
+      const labels = src.filemap?.onnx_metadata?.labels || [];
+
+      const entities = [];
+      const offsets = enc.offsets_mapping?.tolist?.()?.[0] || [];
+      for (let t = 0; t < seqLen; t++) {
+        let maxIdx = 0, maxVal = -Infinity;
+        for (let l = 0; l < numLabels; l++) {
+          const val = logits.data[t * numLabels + l];
+          if (val > maxVal) { maxVal = val; maxIdx = l; }
+        }
+        const label = labels[maxIdx] || `L${maxIdx}`;
+        if (label !== 'O' && label !== 'o') {
+          const off = offsets[t] || [0,0];
+          entities.push({ word: this.ner.text.slice(off[0], off[1]), entity: label, start: off[0], end: off[1] });
+        }
+      }
+
+      // Build highlighted HTML
+      let html = '', lastEnd = 0;
+      for (const e of entities) {
+        if (e.start > lastEnd) html += this._escHtml(this.ner.text.slice(lastEnd, e.start));
+        const style = nerStyle(e.entity);
+        html += `<span class="ner-entity" style="${style}" title="${e.entity}">${this._escHtml(e.word)}</span>`;
+        lastEnd = e.end;
+      }
+      if (lastEnd < this.ner.text.length) html += this._escHtml(this.ner.text.slice(lastEnd));
+
+      this.ner.html = html;
+      this.ner.entities = entities;
+      this.ner.time = `${entities.length} entities in ${(performance.now()-t0)|0}ms`;
+    } catch(e) { this.L('err', 'NER: ' + e.message); }
+    this.ner.running = false;
+  },
+
+  // ── Inference: QA ─────────────────────────────────────────────────────
+  async runQA(src) {
+    if (!getM(src).model || !getM(src).tokenizer || this.qa.running) return;
+    this.qa.running = true;
+    const t0 = performance.now();
+    try {
+      const enc = await getM(src).tokenizer(this.qa.question, { text_pair: this.qa.context, padding: true, truncation: true });
+      const out = await getM(src).model(enc);
+      const startLogits = out.start_logits.data;
+      const endLogits = out.end_logits.data;
+      let startIdx = 0, endIdx = 0;
+      for (let i = 1; i < startLogits.length; i++) { if (startLogits[i] > startLogits[startIdx]) startIdx = i; }
+      for (let i = startIdx; i < endLogits.length; i++) { if (endLogits[i] > endLogits[endIdx]) endIdx = i; }
+      const ids = enc.input_ids.data.slice(startIdx, endIdx + 1);
+      this.qa.answer = getM(src).tokenizer.decode(ids, { skip_special_tokens: true });
+      this.qa.score = startLogits[startIdx] + endLogits[endIdx];
+      this.qa.time = `${(performance.now()-t0)|0}ms`;
+    } catch(e) { this.L('err', 'QA: ' + e.message); }
+    this.qa.running = false;
+  },
+
+  // ── Inference: LLM Chat ───────────────────────────────────────────────
+  _chatEl(src) { return document.querySelector(`[data-chatbox="${src.id}"]`); },
+  _scrollChat(src) { this.$nextTick(() => { const el = this._chatEl(src); if(el) el.scrollTop = el.scrollHeight; }); },
+
+  async sendChat(src) {
+    const text = this.llm.userInput.trim();
+    const wl = getM(src).wl;
+    if (!text || !wl || this.llm.generating) return;
+    this.llm.userInput = '';
+    // Attach pending images to message
+    const images = [...this.llm.pendingImages];
+    this.llm.pendingImages = [];
+    this.llm.messages.push({ role: 'user', content: text, images: images.length ? images : null });
+    this.llm.generating = true;
+    this.llm.streamText = '';
+    this.llm.genStats = '';
+    this._scrollChat(src);
+
+    const t0 = performance.now();
+    let tokenCount = 0;
+    try {
+      // Build plain messages for _wlRunChat (outside Alpine scope)
+      const plainMsgs = this.llm.messages.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
+      const maxTok = this.llm.maxTokens;
+      const self = this;
+      const tokenCb = function(token, piece, currentText) {
+        tokenCount++;
+        self.llm.streamText = currentText;
+        const el = self._chatEl(src); if(el) el.scrollTop = el.scrollHeight;
+      };
+
+      const result = await _wlRunChat(wl, plainMsgs, maxTok, tokenCb);
+
+      const ms = performance.now() - t0;
+      const reply = result || this.llm.streamText;
+      this.llm.messages.push({ role: 'assistant', content: reply });
+      this.llm.streamText = '';
+      const tps = tokenCount > 0 ? (tokenCount / (ms / 1000)).toFixed(1) : '?';
+      this.llm.genStats = `${tokenCount} tokens · ${(ms/1000).toFixed(1)}s · ${tps} t/s`;
+    } catch(e) {
+      if (e.name !== 'AbortError') {
+        this.L('err', 'LLM: ' + e.message);
+        if (this.llm.streamText) { this.llm.messages.push({ role: 'assistant', content: this.llm.streamText + ' [error]' }); this.llm.streamText = ''; }
+      }
+    }
+    this.llm.generating = false;
+    this._scrollChat(src);
+  },
+
+  stopChat(src) { _wlStop(getM(src).wl); },
+
+  // ── Image bank ────────────────────────────────────────────────────────
+  addImages(event) {
+    for (const file of event.target.files) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        this.llm.pendingImages.push({ id: nextId(), name: file.name, dataUrl: e.target.result, file });
+      };
+      reader.readAsDataURL(file);
+    }
+    event.target.value = ''; // reset so same file can be added again
+  },
+  removePendingImage(i) { this.llm.pendingImages.splice(i, 1); },
+
+  // ── Helpers ───────────────────────────────────────────────────────────
+  readySources(type) {
+    return this.sources.filter(s => s.ready && s.detectedType === type);
+  },
+  sourceLabel(src) {
+    const om = src.filemap?.onnx_metadata;
+    const name = om?.name || om?.model_type || getM(src).ggufName || '';
+    const short = src.url.split('/').filter(Boolean).pop() || src.url;
+    return name || short;
+  },
+  typeBadgeClass(type) {
+    const map = { embedding:'badge-embedding', reranker:'badge-reranker', 'text-classification':'badge-classifier',
+      'token-classification':'badge-ner', 'question-answering':'badge-qa', llm:'badge-llm', mmproj:'badge-mmproj' };
+    return map[type] || 'badge-unknown';
+  },
+  fmtB(b) { return !b ? '0 B' : b >= 1048576 ? (b/1048576).toFixed(1)+' MB' : b >= 1024 ? (b/1024).toFixed(1)+' KB' : b+' B'; },
+  clearCache() {
+    // Clear our SW shard cache
+    navigator.serviceWorker.controller?.postMessage({ type: 'MODEL_SW_CLEAR_CACHE' });
+    // Clear Transformers.js browser cache (separate Cache Storage bucket)
+    caches.delete('transformers-cache').then(ok => {
+      if (ok) this.L('sys', 'Cleared transformers-cache.');
+    }).catch(() => {});
+    this.L('sys', 'Clearing caches...');
+  },
+  _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); },
+  L(t, m) {
+    this.log.push({ t, m, ts: new Date().toTimeString().slice(0,8) });
+    if (this.log.length > 300) this.log.splice(0, 50);
+    this.$nextTick(() => { const el = this.$refs.logBox; if(el) el.scrollTop = el.scrollHeight; });
+  },
+});
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+</body>
+</html>

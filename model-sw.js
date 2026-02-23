@@ -25,6 +25,7 @@
 let sources = [];
 const filemaps = new Map();
 const filemapLoading = new Map();
+const shardInflight = new Map();   // url → Promise<ArrayBuffer> — dedup concurrent fetches
 const CACHE_NAME = 'model-shards-v1';
 
 // ─── Progress ───────────────────────────────────────────────────────────────
@@ -288,6 +289,22 @@ function doBroadcast(pathPrefix, st) {
   }).catch(() => {});
 }
 
+// ─── COEP-safe proxy fetch (wraps cross-origin response in same-origin) ─────
+
+async function proxiedFetch(url) {
+  const r = await fetch(url, { mode: 'cors' });
+  if (!r.ok) return new Response(null, { status: r.status, statusText: r.statusText });
+  const body = await r.arrayBuffer();
+  return new Response(body, {
+    status: r.status,
+    headers: {
+      'Content-Type': r.headers.get('Content-Type') || 'application/octet-stream',
+      'Content-Length': String(body.byteLength),
+      'X-Model-SW': 'proxied-fallback',
+    },
+  });
+}
+
 // ─── Fetch interception ─────────────────────────────────────────────────────
 
 self.addEventListener('fetch', (event) => {
@@ -309,9 +326,9 @@ function matchSource(pathname) {
 
 async function handleModelFetch(request, source, relPath) {
   const map = await loadFilemap(source.cdnBase);
-  if (!map) return fetch(`${source.cdnBase}/${relPath}`);
+  if (!map) return proxiedFetch(`${source.cdnBase}/${relPath}`);
   const entry = map.files[relPath];
-  if (!entry) return fetch(`${source.cdnBase}/${relPath}`);
+  if (!entry) return proxiedFetch(`${source.cdnBase}/${relPath}`);
 
   if (source.progress) {
     narrowManifest(source.pathPrefix, relPath);
@@ -319,14 +336,22 @@ async function handleModelFetch(request, source, relPath) {
     onFetchStart(source.pathPrefix);
   }
 
-  // Unsharded
+  // Unsharded — use same dedup/cache pattern as shards
   if (!entry.shards) {
     const cdnFile = entry.cdn_file || relPath;
+    const cdnUrl = `${source.cdnBase}/${cdnFile}`;
     try {
-      const resp = await fetch(`${source.cdnBase}/${cdnFile}`, { headers: request.headers, method: request.method });
+      const body = await fetchShard(cdnFile, source);  // reuse dedup-aware fetcher
       recordProgress(source.pathPrefix, relPath, entry.size);
       scheduleProgress(source.pathPrefix);
-      return resp;
+      return new Response(body, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(body.byteLength),
+          'X-Model-SW': 'proxied',
+        },
+      });
     } finally {
       if (source.progress) onFetchEnd(source.pathPrefix);
     }
@@ -420,38 +445,70 @@ async function respondRange(entry, source, start, end, relPath) {
   });
 }
 
-// ─── Shard fetching ─────────────────────────────────────────────────────────
+// ─── Shard fetching (with in-flight deduplication) ──────────────────────────
+//
+// Without dedup: if wllama probes the file (GET/HEAD), then downloads it,
+// both requests hit fetchShard concurrently → two CDN fetches for same shard.
+// Fix: shardInflight map holds promises for in-progress fetches.
 
 async function fetchShard(file, source) {
   const url = `${source.cdnBase}/${file}`;
+  // 1. Check Cache Storage
   try {
     const c = await caches.open(CACHE_NAME);
     const hit = await c.match(url);
     if (hit) return hit.arrayBuffer();
   } catch (_) {}
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`[model-sw] ${r.status} ${url}`);
-  const clone = r.clone();
-  caches.open(CACHE_NAME).then(c => c.put(url, clone)).catch(() => {});
-  return r.arrayBuffer();
+  // 2. Join existing in-flight fetch if one exists
+  if (shardInflight.has(url)) {
+    // Return a copy — the original ArrayBuffer may be detached
+    const buf = await shardInflight.get(url);
+    console.debug(`[model-sw] dedup hit: ${file}`);
+    return buf.slice(0);
+  }
+  // 3. Start new fetch, store promise in dedup map
+  const promise = (async () => {
+    const r = await fetch(url, { mode: 'cors' });
+    if (!r.ok) throw new Error(`[model-sw] ${r.status} ${url}`);
+    const buf = await r.arrayBuffer();
+    // Write to Cache Storage (fire-and-forget, but with await for safety)
+    try {
+      const c = await caches.open(CACHE_NAME);
+      await c.put(url, new Response(buf.slice(0)));
+    } catch (_) {}
+    return buf;
+  })();
+  shardInflight.set(url, promise);
+  try {
+    return await promise;
+  } finally {
+    shardInflight.delete(url);
+  }
 }
 
 async function fetchShardSlice(file, source, sub0, sub1) {
   const url = `${source.cdnBase}/${file}`;
+  // Check cache for full shard
   try {
     const c = await caches.open(CACHE_NAME);
     const hit = await c.match(url);
     if (hit) { const full = await hit.arrayBuffer(); return full.slice(sub0, sub1 + 1); }
   } catch (_) {}
+  // Try Range request directly (some CDNs support it)
   try {
-    const r = await fetch(url, { headers: { 'Range': `bytes=${sub0}-${sub1}` } });
+    const r = await fetch(url, { mode: 'cors', headers: { 'Range': `bytes=${sub0}-${sub1}` } });
     if (r.status === 206) return r.arrayBuffer();
     if (r.ok) {
+      // CDN returned full file instead of range — cache it, return slice
       const full = await r.arrayBuffer();
-      caches.open(CACHE_NAME).then(c => c.put(url, new Response(full.slice(0)))).catch(() => {});
+      try {
+        const c = await caches.open(CACHE_NAME);
+        await c.put(url, new Response(full.slice(0)));
+      } catch (_) {}
       return full.slice(sub0, sub1 + 1);
     }
   } catch (_) {}
+  // Fallback: fetch full shard via dedup-aware fetchShard
   return (await fetchShard(file, source)).slice(sub0, sub1 + 1);
 }
 
@@ -462,7 +519,7 @@ async function loadFilemap(cdnBase) {
   if (!filemapLoading.has(cdnBase)) {
     filemapLoading.set(cdnBase, (async () => {
       try {
-        const r = await fetch(`${cdnBase}/filemap.json`);
+        const r = await fetch(`${cdnBase}/filemap.json`, { mode: 'cors' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const data = await r.json();
         filemaps.set(cdnBase, data);

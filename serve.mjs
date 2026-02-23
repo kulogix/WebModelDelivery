@@ -120,7 +120,7 @@ function createServer() {
           'Content-Type': mime,
           'Access-Control-Allow-Origin': '*',
           'Service-Worker-Allowed': '/',
-          'Cross-Origin-Embedder-Policy': 'require-corp',
+          'Cross-Origin-Embedder-Policy': 'credentialless',
           'Cross-Origin-Opener-Policy': 'same-origin',
         });
         fs.createReadStream(filePath, { start, end }).pipe(res);
@@ -136,7 +136,7 @@ function createServer() {
       'Access-Control-Allow-Origin': '*',
       'Service-Worker-Allowed': '/',
       'Cache-Control': 'no-cache',      // Dev convenience: no stale files
-      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Embedder-Policy': 'credentialless',
       'Cross-Origin-Opener-Policy': 'same-origin',
     });
     fs.createReadStream(filePath).pipe(res);
